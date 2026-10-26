@@ -1,0 +1,60 @@
+{
+  "name": "safe-email-html",
+  "version": "0.1.0",
+  "description": "Render untrusted inbound email HTML safely: allowlist sanitizing, signed link and image rewriting, phishing-aware redirect decisions, and a strict frame CSP.",
+  "license": "Apache-2.0",
+  "author": "Cogniar",
+  "contributors": [
+    "Gonzalo Zanelli (https://github.com/zanellig)"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cogniarg/safe-email-html.git"
+  },
+  "keywords": [
+    "email",
+    "html",
+    "sanitizer",
+    "xss",
+    "phishing",
+    "dompurify",
+    "cloudflare-workers",
+    "csp"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "docs",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@11.15.1",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "test": "vitest run",
+    "prepublishOnly": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run build"
+  },
+  "dependencies": {
+    "dompurify": "^3.4.16",
+    "linkedom": "^0.18.12"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.14",
+    "@types/node": "22.13.14",
+    "typescript": "5.9.3",
+    "vitest": "4.1.5"
+  }
+}
