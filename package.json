@@ -1,6 +1,6 @@
 {
   "name": "safe-email-html",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Render untrusted inbound email HTML safely: allowlist sanitizing, signed link and image rewriting, phishing-aware redirect decisions, and a strict frame CSP.",
   "license": "Apache-2.0",
   "author": "Cogniar",

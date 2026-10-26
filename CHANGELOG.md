@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1
+
+- Package metadata identifies contributors by GitHub profile instead of
+  email address. No code changes.
+- 0.1.0 was unpublished: its `package.json` listed a personal email address.
+
 ## 0.1.0
 
 First public release, extracted from Cogniar's internal email workspace.
