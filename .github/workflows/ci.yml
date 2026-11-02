@@ -1,9 +1,18 @@
 name: CI
 
+# Prose-only changes can't affect typecheck, lint, tests or the build.
 on:
   push:
     branches: [main]
+    paths-ignore: &prose
+      - "**/*.md"
+      - docs/**
+      - LICENSE
+      - NOTICE
+      - .gitignore
+      - .github/dependabot.yml
   pull_request:
+    paths-ignore: *prose
 
 permissions:
   contents: read
