@@ -34,5 +34,5 @@ sandboxed iframe or not verifying signatures.
 
 Sanitizing rests on DOMPurify. When DOMPurify publishes a security fix, this
 package ships a patch release that raises the minimum of its `dompurify`
-range past the fixed version, so installing the latest patch of
-`safe-email-html` never resolves to a vulnerable DOMPurify.
+range to the fixed version, so installing that patch can't resolve to a
+DOMPurify version affected by the advisory.
