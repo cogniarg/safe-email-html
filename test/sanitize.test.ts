@@ -7,11 +7,12 @@ import {
   sanitizeInboundHtml,
 } from "../src/sanitize.js"
 import { transactionalEmailHtml } from "./fixtures/transactional-email.js"
+import { renderChecked } from "./parser-differential.js"
 
 const MESSAGE_ID = "msg_test"
 
 function sanitize(html: string, remoteImages?: "blocked" | "proxied") {
-  return sanitizeInboundHtml({ html, messageId: MESSAGE_ID, remoteImages })
+  return renderChecked(html, { messageId: MESSAGE_ID, remoteImages })
 }
 
 describe("sanitizeInboundHtml", async () => {
@@ -206,12 +207,14 @@ describe("sanitizeInboundHtml", async () => {
 
   it("proxies a remote image inside a link like any other once opted in", async () => {
     const proxiedUrls: string[] = []
+    const source =
+      '<a href="https://shop.example/sale">' +
+      '<img src="https://cdn.example/banner.png" alt="Autumn sale">' +
+      "</a>" +
+      '<img src="https://cdn.example/logo.png">'
+    await sanitize(source, "proxied")
     const { html, hasRemoteImages } = await sanitizeInboundHtml({
-      html:
-        '<a href="https://shop.example/sale">' +
-        '<img src="https://cdn.example/banner.png" alt="Autumn sale">' +
-        "</a>" +
-        '<img src="https://cdn.example/logo.png">',
+      html: source,
       messageId: MESSAGE_ID,
       remoteImages: "proxied",
       buildRemoteImageUrl: (url) => {
@@ -238,8 +241,10 @@ describe("sanitizeInboundHtml", async () => {
       { length: MAX_PROXIED_REMOTE_IMAGES + 1 },
       (_, index) => `<img src="https://cdn.example/${index}.png">`
     ).join("")
+    const source = `${images}<img src="https://cdn.example/0.png">`
+    await sanitize(source, "proxied")
     const { html } = await sanitizeInboundHtml({
-      html: `${images}<img src="https://cdn.example/0.png">`,
+      html: source,
       messageId: MESSAGE_ID,
       remoteImages: "proxied",
       buildRemoteImageUrl: (url) => {
@@ -332,7 +337,24 @@ describe("sanitizeInboundHtml", async () => {
     )
   })
 
+  it("defaults to unsigned redirect and image-proxy URLs", async () => {
+    const { html } = await sanitizeInboundHtml({
+      html:
+        '<a href="https://example.com/docs">docs</a>' +
+        '<img src="https://cdn.example/logo.png">',
+      messageId: MESSAGE_ID,
+      remoteImages: "proxied",
+    })
+
+    expect(html).toContain(
+      `href="/api/redirect?to=${encodeURIComponent("https://example.com/docs")}`
+    )
+    expect(html).toContain('src="/api/img-proxy?')
+    expect(html).not.toContain("sig=")
+  })
+
   it("builds rewritten link hrefs through the provided signer", async () => {
+    await sanitize('<a href="https://example.com/docs">docs</a>')
     const { html } = await sanitizeInboundHtml({
       html: '<a href="https://example.com/docs">docs</a>',
       messageId: MESSAGE_ID,
@@ -351,6 +373,7 @@ describe("sanitizeInboundHtml", async () => {
       { length: MAX_REWRITTEN_REMOTE_LINKS + 2 },
       (_, index) => `<a href="https://example.com/${index}">link ${index}</a>`
     ).join("")
+    await sanitize(anchors)
     const { html } = await sanitizeInboundHtml({
       html: anchors,
       messageId: MESSAGE_ID,
