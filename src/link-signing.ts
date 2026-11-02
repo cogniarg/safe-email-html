@@ -8,7 +8,7 @@
  * The HMAC key is derived from your secret via HKDF, so every server
  * instance computes the same key with no storage and no generation race,
  * and the derived subkey never exposes the secret itself. Uses only Web
- * Crypto, so it runs unchanged on Node.js 20+, Bun, Deno and Cloudflare
+ * Crypto, so it runs unchanged on Node.js 22+, Bun, Deno and Cloudflare
  * Workers.
  */
 

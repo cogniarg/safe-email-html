@@ -14,7 +14,7 @@ const { html, hasRemoteImages } = await sanitizeInboundHtml({
 
 Extracted from [Cogniar](https://cogni.ar)'s internal email workspace, where
 it renders every inbound message on Cloudflare Workers. It needs no DOM, uses
-only Web Crypto, and runs on Node.js 20+, Bun, Deno and Workers.
+only Web Crypto, and runs on Node.js 22+, Bun, Deno and Workers.
 
 ## What it does
 

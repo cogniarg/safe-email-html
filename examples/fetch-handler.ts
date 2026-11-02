@@ -1,6 +1,6 @@
 /**
  * A complete integration using only the Fetch API, so it runs unchanged on
- * Cloudflare Workers, Bun, Deno and Node.js 20+ (behind any router).
+ * Cloudflare Workers, Bun, Deno and Node.js 22+ (behind any router).
  *
  *   GET /messages/:id/body   the sanitized body, served into a sandboxed iframe
  *   GET /api/redirect        the signed link confirmation page

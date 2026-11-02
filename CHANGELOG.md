@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- CI now runs the built package on Deno and workerd as well as Node.js and
+  Bun, so every runtime the README lists is tested.
+
+Breaking changes:
+
+- Requires Node.js 22 or later (`engines.node` is `>=22`). Node.js 20 reached
+  end of life in April 2026 and is no longer tested.
+
 ## 0.2.1
 
 No code changes from 0.2.0. First release published from CI:

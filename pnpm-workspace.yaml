@@ -1,0 +1,5 @@
+# wrangler's esbuild and workerd binaries come from platform packages, so
+# their install scripts aren't needed.
+allowBuilds:
+  esbuild: false
+  workerd: false
