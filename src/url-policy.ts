@@ -3,7 +3,7 @@
  *
  * Centralizes every decision about which URLs the safe-render pipeline may
  * touch: which image hosts are proxied or refused, which link destinations
- * require a phishing warning, and which attachment types need an explicit
+ * may be confirmed and followed, and which attachment types need an explicit
  * confirmation before download. Keeping the policy pure and side-effect free
  * lets both the sanitizer and your server routes share one implementation.
  */
@@ -17,13 +17,6 @@ export const DEFAULT_CSP_REPORT_PATH = "/api/csp-report"
 
 /** Bound on the displayed link text forwarded to the redirect endpoint. */
 export const MAX_DISPLAYED_LINK_TEXT_CHARS = 200
-
-/**
- * How many hosts dropped by the display-text cap are re-appended so the
- * mismatch check still sees them. Bounds the signed text against a label
- * stuffed with hundreds of URL-shaped strings.
- */
-const MAX_PRESERVED_DISPLAYED_HOSTS = 5
 
 // Anything the browser can resolve to a remote authority: full http(s)
 // URLs, scheme-relative `//host` URLs, and slashless `http:host/path`
@@ -53,61 +46,23 @@ export function isRemoteUrl(value: string): boolean {
 }
 
 /**
- * Normalizes the displayed link text forwarded to the redirect endpoint.
- * Exported so signers can bind the exact string that ends up in the `text`
- * query parameter.
+ * Normalizes the displayed link text forwarded to the redirect endpoint,
+ * plainly truncated: the interstitial only shows it, and no decision reads
+ * it. Exported so signers can bind the exact string that ends up in the
+ * `text` query parameter.
  */
-export function boundDisplayedLinkText(
-  displayedText: string,
-  to?: string
-): string {
-  const normalized = displayedText.replace(/\s+/g, " ").trim()
-  const sliced = normalized.slice(0, MAX_DISPLAYED_LINK_TEXT_CHARS)
+export function boundDisplayedLinkText(displayedText: string): string {
+  const sliced = displayedText
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_DISPLAYED_LINK_TEXT_CHARS)
 
   // slice() cuts by UTF-16 code unit, so the bound can fall between the two
   // halves of a surrogate pair and leave a lone high surrogate. The body
   // route signs this exact string, but URLSearchParams later coerces a lone
   // surrogate to U+FFFD; dropping the dangling half keeps the signed and the
   // serialized text identical so the rewritten link does not 403.
-  const bounded = /[\uD800-\uDBFF]$/.test(sliced) ? sliced.slice(0, -1) : sliced
-
-  if (bounded.length === normalized.length) {
-    return bounded
-  }
-
-  // The cap must not hide URL-shaped claims: a long (e.g. display:none)
-  // prefix would otherwise push a visible `https://mybank.com` past the
-  // bound, and the redirect endpoint would evaluate a label with no claimed
-  // host. Re-append the hosts the cut dropped so every claim stays bound
-  // into the signed text. Hosts that do NOT look like the destination — the
-  // ones that trigger the mismatch warning — are preserved first, so a
-  // sender cannot overflow the cap with destination-matching decoys to
-  // push the one spoofed host off the list.
-  const destinationHost = safeParseHostname(to)
-  const kept = new Set(extractDisplayedHosts(bounded))
-  const lost = [...new Set(extractDisplayedHosts(normalized))]
-    .filter((host) => !kept.has(host))
-    .sort(
-      (a, b) =>
-        Number(destinationHost !== null && hostsLookAlike(a, destinationHost)) -
-        Number(destinationHost !== null && hostsLookAlike(b, destinationHost))
-    )
-    .slice(0, MAX_PRESERVED_DISPLAYED_HOSTS)
-
-  return lost.length > 0 ? `${bounded} ${lost.join(" ")}` : bounded
-}
-
-/** Hostname of a URL string, or null when absent or unparsable. */
-function safeParseHostname(url: string | undefined): string | null {
-  if (!url) {
-    return null
-  }
-
-  try {
-    return new URL(url).hostname
-  } catch {
-    return null
-  }
+  return /[\uD800-\uDBFF]$/.test(sliced) ? sliced.slice(0, -1) : sliced
 }
 
 export function buildRedirectUrl({
@@ -125,7 +80,7 @@ export function buildRedirectUrl({
     to,
     messageId,
   })
-  const boundedText = boundDisplayedLinkText(displayedText, to)
+  const boundedText = boundDisplayedLinkText(displayedText)
 
   if (boundedText) {
     params.set("text", boundedText)
@@ -150,8 +105,7 @@ export function buildImgProxyUrl({
 
 /**
  * Parses a comma-separated domain list (for example from an environment
- * variable) into a normalized set. Used for both the image-proxy blocklist and the
- * always-warn redirect list.
+ * variable) into a normalized set, such as the image-proxy blocklist.
  */
 export function parseDomainList(value?: string): Set<string> {
   return new Set(
@@ -198,28 +152,16 @@ export function hostMatchesAnyDomain(
 
 export type RedirectDecision =
   | { kind: "refused"; reason: "invalid_url" | "unsupported_scheme" }
-  | { kind: "warn"; destination: URL; reasons: RedirectWarnReason[] }
-  | { kind: "allow"; destination: URL }
-
-export type RedirectWarnReason = "text_host_mismatch" | "always_warn_domain"
+  | { kind: "confirm"; destination: URL }
 
 /**
- * Decides how the redirect endpoint should treat a link click coming out of
- * an inbound message. Only http(s) destinations are ever navigable; a
- * warning interstitial is required when the visible link text claims a
- * different host than the real destination, or when the destination is on
- * the configured always-warn list (banks, common phishing targets, your own
- * internal hosts).
+ * Decides how the redirect endpoint treats a link click coming out of an
+ * inbound message. Only http(s) destinations are navigable, and every one
+ * is confirmed first. Nothing about the link text is consulted: hidden
+ * spans and CSS make the visible label unknowable on the server, so no
+ * reading of it may skip the confirmation.
  */
-export function evaluateRedirectTarget({
-  to,
-  displayedText,
-  alwaysWarnDomains,
-}: {
-  to: string
-  displayedText: string | null
-  alwaysWarnDomains: ReadonlySet<string>
-}): RedirectDecision {
+export function evaluateRedirectTarget(to: string): RedirectDecision {
   let destination: URL
 
   try {
@@ -232,92 +174,7 @@ export function evaluateRedirectTarget({
     return { kind: "refused", reason: "unsupported_scheme" }
   }
 
-  const reasons: RedirectWarnReason[] = []
-  const displayedHosts = extractDisplayedHosts(displayedText)
-
-  // Warn if any host visible in the link text — including one hidden behind
-  // CSS or placed before an `@` userinfo delimiter — fails to look like the
-  // real destination. Checking every candidate, not just the first, stops an
-  // attacker from prefixing a matching host to suppress the warning while the
-  // user still reads a trusted-looking label.
-  if (
-    displayedHosts.some((host) => !hostsLookAlike(host, destination.hostname))
-  ) {
-    reasons.push("text_host_mismatch")
-  }
-
-  if (hostMatchesAnyDomain(destination.hostname, alwaysWarnDomains)) {
-    reasons.push("always_warn_domain")
-  }
-
-  return reasons.length > 0
-    ? { kind: "warn", destination, reasons }
-    : { kind: "allow", destination }
-}
-
-/**
- * Pulls every host out of link text that looks like a URL or a bare domain,
- * which is the classic phishing shape ("https://mybank.com" pointing at
- * attacker.example). Plain prose yields an empty list: there is nothing to
- * compare. The `@` in the lookahead captures a host used as URL userinfo
- * (`trusted.com@evil.example`), so a trusted-looking label before the `@` is
- * compared instead of silently skipped.
- */
-export function extractDisplayedHosts(text: string | null): string[] {
-  if (!text) {
-    return []
-  }
-
-  const hosts: string[] = []
-
-  for (const match of text.matchAll(
-    /(?:https?:\/\/)?(?:[\p{L}\p{N}](?:[\p{L}\p{N}\p{M}-]*[\p{L}\p{N}\p{M}])?\.)+(?:[\p{L}]{2,}|xn--[a-z0-9-]{2,})\.?(?=[/:@?#,;!.)\]}>'"\s]|$)/giu
-  )) {
-    const host = normalizeDisplayedHost(match[0])
-
-    if (host !== null) {
-      hosts.push(host)
-    }
-  }
-
-  return hosts
-}
-
-function normalizeDisplayedHost(candidate: string): string | null {
-  const value = /^https?:\/\//i.test(candidate)
-    ? candidate
-    : `https://${candidate}`
-
-  try {
-    return canonicalizeHost(new URL(value).hostname)
-  } catch {
-    return null
-  }
-}
-
-function hostsLookAlike(
-  displayedHost: string,
-  destinationHost: string
-): boolean {
-  // `www.` is the one prefix labels and destinations use interchangeably.
-  const normalizedDestination = canonicalizeHost(destinationHost).replace(
-    /^www\./,
-    ""
-  )
-  const normalizedDisplayed = canonicalizeHost(displayedHost).replace(
-    /^www\./,
-    ""
-  )
-
-  // The destination may sit under the displayed host (label `example.com`
-  // linking to `mail.example.com`): the reader sees the parent domain,
-  // so nothing is hidden. The reverse is a phishing shape — a label like
-  // `mybank.com.evil.example.com` IS a subdomain of the destination
-  // `evil.example.com` but reads as mybank — and must keep the warning.
-  return (
-    normalizedDisplayed === normalizedDestination ||
-    hostMatchesDomain(normalizedDestination, normalizedDisplayed)
-  )
+  return { kind: "confirm", destination }
 }
 
 const EXECUTABLE_CONTENT_TYPES = new Set([

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  MAX_PROXIED_REMOTE_IMAGES,
   MAX_REWRITTEN_REMOTE_LINKS,
   MAX_SANITIZED_HTML_CHARS,
   sanitizeInboundHtml,
@@ -90,7 +91,7 @@ describe("sanitizeInboundHtml", async () => {
     expect(html).toContain('style="color: green"')
   })
 
-  it("keeps presentational inline styles but drops overlay-capable properties", async () => {
+  it("keeps presentational inline styles but drops properties off the allowlist", async () => {
     const { html } = await sanitize(
       '<div style="position:absolute;inset:0;background-color:#fff">' +
         '<a href="https://evil.example" style="color:#fff;position:fixed">click</a>' +
@@ -107,14 +108,13 @@ describe("sanitizeInboundHtml", async () => {
     expect(html).toContain('style="color: green"')
   })
 
-  it("drops negative margins but keeps ordinary ones", async () => {
+  it("keeps negative margins, which every link's confirmation makes harmless", async () => {
     const { html } = await sanitize(
       '<a href="https://evil.example">click</a>' +
-        '<div style="margin-top: -120px; margin-bottom: 4px">overlay attempt</div>'
+        '<div style="margin-top: -120px; margin-bottom: 4px">pulled up</div>'
     )
 
-    expect(html).not.toContain("margin-top")
-    expect(html).toContain('style="margin-bottom: 4px"')
+    expect(html).toContain('style="margin-top: -120px; margin-bottom: 4px"')
   })
 
   it("keeps the hidden-preheader idiom intact", async () => {
@@ -204,12 +204,12 @@ describe("sanitizeInboundHtml", async () => {
     expect(html).toContain(`messageId=${MESSAGE_ID}`)
   })
 
-  it("keeps linked remote images blocked when other remote images are enabled", async () => {
+  it("proxies a remote image inside a link like any other once opted in", async () => {
     const proxiedUrls: string[] = []
     const { html, hasRemoteImages } = await sanitizeInboundHtml({
       html:
-        '<a href="https://evil.example/login">' +
-        '<img src="https://attacker.example/bank.png" alt="">' +
+        '<a href="https://shop.example/sale">' +
+        '<img src="https://cdn.example/banner.png" alt="Autumn sale">' +
         "</a>" +
         '<img src="https://cdn.example/logo.png">',
       messageId: MESSAGE_ID,
@@ -221,11 +221,38 @@ describe("sanitizeInboundHtml", async () => {
     })
 
     expect(hasRemoteImages).toBe(true)
-    expect(proxiedUrls).toEqual(["https://cdn.example/logo.png"])
+    expect(proxiedUrls).toEqual([
+      "https://cdn.example/banner.png",
+      "https://cdn.example/logo.png",
+    ])
+    // The link itself still opens the confirmation page.
     expect(html).toMatch(
-      /<a[^>]+><img[^>]+data-original-src="https:\/\/attacker\.example\/bank\.png"[^>]+src="about:blank"[^>]*><\/a>/
+      /<a [^>]*href="\/api\/redirect\?to=https%3A%2F%2Fshop\.example%2Fsale[^"]*"[^>]*><img[^>]+src="\/proxy\/1"[^>]*><\/a>/
     )
-    expect(html).toContain('src="/proxy/1"')
+    expect(html).toContain('src="/proxy/2"')
+  })
+
+  it("signs each distinct remote image once, up to the per-message bound", async () => {
+    const signed: string[] = []
+    const images = Array.from(
+      { length: MAX_PROXIED_REMOTE_IMAGES + 1 },
+      (_, index) => `<img src="https://cdn.example/${index}.png">`
+    ).join("")
+    const { html } = await sanitizeInboundHtml({
+      html: `${images}<img src="https://cdn.example/0.png">`,
+      messageId: MESSAGE_ID,
+      remoteImages: "proxied",
+      buildRemoteImageUrl: (url) => {
+        signed.push(url)
+        return `/proxy/${signed.length}`
+      },
+    })
+
+    expect(signed).toHaveLength(MAX_PROXIED_REMOTE_IMAGES)
+    expect(html.match(/src="\/proxy\/1"/g)).toHaveLength(2)
+    expect(html).toContain(
+      `data-original-src="https://cdn.example/${MAX_PROXIED_REMOTE_IMAGES}.png" src="about:blank"`
+    )
   })
 
   it("upgrades protocol-relative image URLs to https", async () => {
