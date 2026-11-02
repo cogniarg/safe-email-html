@@ -16,7 +16,7 @@ pieces to build them.
 | Layer | What it does | Provided by |
 |---|---|---|
 | 1. Sanitize | Allowlist DOM filtering, then rewriting of every image, link and inline style | `sanitizeInboundHtml` |
-| 2. Mediate | Signed redirect interstitial and image proxy, so no remote request leaves without passing your server | `createTargetSigner`, `verifyTargetSignature`, `evaluateRedirectTarget` + your endpoints |
+| 2. Mediate | Signed link confirmation page and image proxy, so no remote request leaves without passing your server | `createTargetSigner`, `verifyTargetSignature`, `evaluateRedirectTarget` + your endpoints |
 | 3. Contain | Sandboxed iframe plus a strict CSP on the rendered document | `buildMessageFrameCsp` + your frame |
 
 ## Layer 1: sanitize
@@ -28,35 +28,37 @@ forms and inputs, SVG and MathML never survive. Disallowed containers are
 dropped **with their content** (`KEEP_CONTENT: false`), so a phishing form
 doesn't leak through as bare text.
 
-**`<style>` blocks are dropped; inline styles are filtered.** Stylesheet
-rules can use selectors and `::before { content: "…" }` to paint text that is
-not in the DOM. That text would never be checked against the link's real
-destination. Inline `style=""` can't do that, and it is how senders style
-email for client compatibility anyway. Each inline declaration is checked
-against an allowlist of presentational properties:
+**`<style>` blocks are dropped; inline styles are filtered.** Selectors and
+`::before { content: "…" }` are far harder to filter than inline `style=""`
+declarations, and inline styles are how senders style email for client
+compatibility anyway. Each inline declaration is checked against an
+allowlist of presentational properties:
 
-- **Allowed:** colors, backgrounds, fonts, borders, padding, sizing, table
-  layout, and `display`/`opacity`/`visibility`. Hiding content can't forge a
-  label: visible text is always a subset of the text bound into the link
-  signature. The hidden-preheader idiom depends on these.
-- **Rejected by property:** anything that can move content over other content
-  (`position`, `transform`, `z-index`, `inset`, `float`) and anything unknown.
+- **Allowed:** colors, backgrounds, fonts, borders, margins, padding, sizing,
+  table layout, and `display`/`opacity`/`visibility`, which the
+  hidden-preheader idiom depends on.
+- **Rejected by property:** `position`, `transform`, `z-index`, `inset`,
+  `float` and anything else off the list.
 - **Rejected by value:** `url()`, `image-set()`, `cross-fade()`,
-  `expression()`, CSS comments and backslash escapes (which could smuggle the
-  others past the check), and negative margins (the one allowlisted way to
-  pull content over a link).
+  `expression()`, and CSS comments and backslash escapes, which could smuggle
+  the others past the check.
+
+The filter does not try to stop sender CSS from making a link look like
+something else. Hidden text, negative margins, `letter-spacing` and
+`line-height` can all make the visible label differ from the anchor's text,
+and no server-side filter can know what the browser will paint. That is why
+every link is confirmed (Layer 2) instead of judged by its label.
 
 **Images are blanked by default.** Remote `src` values become `about:blank`,
 with the original kept in `data-original-src`, so opening a message makes no
 network request. Schemeless sources are blanked too, because they resolve
 against your own body route and would fire authenticated same-origin
-requests. `data:` images are blanked because a `data:` SVG can paint a fake
-link label. When the reader opts in, remote images go through your image
-proxy instead. Images inside links stay blocked even then: a loaded image
-could paint a label (say, a picture of `mybank.com`) that never enters the
-signed link text, while a blocked one shows its `alt` text, which is signed.
+requests. `data:` images are blanked too, and the frame CSP would refuse
+them anyway. When the reader opts in, remote images go through your image
+proxy instead, including images inside links: every link is confirmed, so an
+image's pixels can't decide where a click goes.
 
-**Every remote link goes through the interstitial.** That includes
+**Every remote link goes through the confirmation page.** That includes
 scheme-relative `//host` and slashless `http:host` forms, which browsers
 treat as absolute. URLs are normalized the way a WHATWG URL parser would see
 them (C0 controls and tabs/newlines stripped) before any decision, so a
@@ -68,7 +70,10 @@ Every link gets `target="_blank" rel="noopener noreferrer"`.
 **Work is bounded.** Input is capped at `MAX_SANITIZED_HTML_CHARS` (1M
 characters). At most `MAX_REWRITTEN_REMOTE_LINKS` (512) links are signed per
 render, and the rest stay visible but inert, so one message can't turn a
-render into unbounded crypto work.
+render into unbounded crypto work. When images are on, at most
+`MAX_PROXIED_REMOTE_IMAGES` (20) distinct images are signed; repeats reuse
+their URL and the rest stay blank, which also bounds the upstream fetches one
+open can make your proxy do.
 
 ## Layer 2: mediate
 
@@ -79,34 +84,39 @@ an open redirector or an authenticated fetcher with a caller-chosen URL.
 Length-prefixing keeps field boundaries unambiguous: `("ab", "c")` and
 `("a", "bc")` sign differently.
 
-**The displayed link text is bound into the redirect signature.** The warning
-decision depends on what the label claims, so stripping or swapping the
-`text` parameter invalidates the link instead of silently suppressing the
-warning.
+**The displayed link text is bound into the redirect signature.** The
+confirmation page shows it, so stripping or swapping the `text` parameter
+invalidates the link. It is capped at 200 characters.
 
-**`evaluateRedirectTarget` decides what a click does:**
+**`evaluateRedirectTarget(to)` decides what a click does:**
 
 - `refused`: unparsable URLs and anything that isn't `http(s)`.
-- `warn` with `text_host_mismatch`: **any** host claimed in the label fails to
-  look like the destination. Every host is checked, not just the first, so a
-  matching decoy can't cover for a spoofed one. Hosts used as URL userinfo
-  (`mybank.com@evil.example`) are compared too.
-- `warn` with `always_warn_domain`: the destination is on a list you
-  configure, such as banks, common phishing targets or your own internal
-  hosts.
-- `allow`: everything else.
+- `confirm`: everything else. Show a page headed by
+  `decision.destination.host` and let the reader continue or go back.
 
-"Looks like" means equal after removing `www.`, or the destination is a
-subdomain of the label (`example.com` → `mail.example.com`). The reverse is
-treated as phishing: a label of `mybank.com.evil.example` linking to
-`evil.example` still warns. Hostnames are lowercased, stripped of trailing dots
-and IDNA-normalized, so `раураl.com` (Cyrillic) is compared as its punycode
-form, not as `paypal.com`.
+Nothing about the label is consulted. Earlier versions let a link through
+without confirmation when its label didn't name a different host, but the
+server can't know what the browser shows: a hidden span turns a visible
+`bank.com` into the text `bank.com.evil.example`, which matches a link to
+`bank.com.evil.example`. The host scan was also quadratic in the label's
+length. Both are gone. The page can still show the link text, as
+information, never as what the reader saw: it includes CSS-hidden parts.
 
-**Label truncation can't hide a claim.** Labels are capped at 200 characters
-for the URL. Hosts that the cut would drop are re-appended, with mismatching
-hosts first, so a long hidden prefix can't push a spoofed `https://mybank.com`
-out of view of the check.
+The URL parser lowercases and IDNA-encodes the host, so a Cyrillic
+`раураl.com` is shown as `xn--l-7sba6dbr.com`, and userinfo
+(`bank.com@evil.example`) doesn't appear in `host` at all.
+
+**Image URLs need their own authorization.** The frame's sandbox gives it an
+opaque origin, so the browser treats its image requests as cross-site and
+withholds a `SameSite=Lax` session cookie. A proxy that authorizes by session
+returns 401 for every image. Don't fix it with `SameSite=None` or
+`allow-same-origin`, which weaken your whole app. Bind the reader and an
+expiry into the image signature's `context` instead, for example
+`` `${expiry}:${readerId}` ``, send `exp` and the reader id as query
+parameters, and have the proxy verify the signature, reject expired grants,
+then check that this reader may read the message. Rounding the expiry to a
+window (say 15 minutes) keeps a message's image URLs stable, and cacheable,
+within it. A leaked URL loads that one image as that reader until it lapses.
 
 ## Layer 3: contain
 
@@ -120,9 +130,8 @@ base-uri 'none'; frame-ancestors 'self'
 ```
 
 There are no scripts, and the only network access is same-origin images (your
-proxy). `img-src` deliberately excludes `data:`. That backstops every current
-and future "paint a fake label with CSS or an image" trick that Layer 1 might
-miss. Serve the frame with `sandbox="allow-popups
+proxy). `img-src` deliberately excludes `data:`, so an image Layer 1 misses
+can't load without passing your proxy. Serve the frame with `sandbox="allow-popups
 allow-popups-to-escape-sandbox"` (no `allow-scripts`, no `allow-same-origin`),
 so links open in a normal tab and nothing in the frame can touch your app.
 
@@ -136,10 +145,22 @@ The library is pure functions, and it can't enforce what happens around them:
   the endpoints with `verifyTargetSignature` before doing anything else. The
   default URL builders emit unsigned URLs, which are only safe for tests.
 - **Authorize the reader** in every endpoint. A valid signature proves the
-  library emitted the URL, not that this user may read this message.
-- **Harden the image proxy:** fetch without cookies, enforce size limits and
-  image content types, set `X-Content-Type-Options: nosniff`, and apply your
-  domain blocklist. Never forward the reader's IP or headers.
+  library emitted the URL, not that this user may read this message. For the
+  image proxy, authorize from the signed grant described in Layer 2, since
+  the frame's requests carry no session cookie.
+- **Confirm every link** on your redirect page, headed by the destination's
+  host, and HTML-escape everything you put on it.
+- **Harden the image proxy:**
+  - Fetch without cookies, and never forward the reader's IP or headers.
+  - Follow redirects manually and check every hop against your domain
+    blocklist and private, loopback and link-local addresses, so the proxy
+    can't be pointed at your internal network.
+  - Serve only PNG, JPEG, GIF and WebP, identified by their leading bytes
+    rather than the upstream `Content-Type`. Never serve SVG.
+  - Cap the body size, put one deadline (say 10 seconds) over every redirect
+    hop and the body read, and cancel every upstream body you discard.
+  - Respond with `X-Content-Type-Options: nosniff` and
+    `Content-Security-Policy: default-src 'none'`.
 - **Serve attachments** with `Content-Disposition: attachment` and
   `nosniff`, and use `isExecutableAttachment` to require confirmation for
   executables (it checks both the MIME type and the extension, since senders
@@ -152,13 +173,11 @@ The library is pure functions, and it can't enforce what happens around them:
   Senders inline their visual design for client compatibility, so most mail
   renders as intended. Adding it safely would need a real CSS parser with
   selector and pseudo-element allowlists.
-- **The label check only fires on URL-shaped labels.** "Click here" pointing
-  anywhere is allowed, because there is no claim to contradict. Use the
-  always-warn list for destinations that deserve a warning regardless, or
-  confirm every external link if your threat model needs it.
-- **No confusable-character detection.** IDNA normalization stops
-  `раураl.com` from being compared as `paypal.com`, but the library doesn't
-  flag look-alike domains such as `paypa1.com` by themselves.
+- **One extra click per external link.** That is the cost of not trusting
+  the label.
+- **No confusable-character detection.** IDNA encoding shows `раураl.com`
+  as punycode on the confirmation page, but the library doesn't flag
+  look-alike domains such as `paypa1.com` by themselves.
 - **linkedom is not a spec HTML parser.** It is fast and needs no DOM, but it
   differs from browsers in places. The library compensates where it matters:
   it unwraps full documents itself, refuses to run if DOMPurify reports the

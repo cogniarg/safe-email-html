@@ -5,7 +5,6 @@ import {
   buildRedirectUrl,
   createTargetSigner,
   evaluateRedirectTarget,
-  parseDomainList,
   sanitizeInboundHtml,
   verifyTargetSignature,
 } from "../src/index.js"
@@ -25,7 +24,7 @@ async function render(html: string) {
         purpose: "redirect",
         messageId: MESSAGE_ID,
         target: url,
-        context: boundDisplayedLinkText(displayedText, url),
+        context: boundDisplayedLinkText(displayedText),
       })
 
       return `${buildRedirectUrl({ to: url, messageId: MESSAGE_ID, displayedText })}&sig=${signature}`
@@ -48,13 +47,7 @@ async function click(href: string) {
     signature: params.get("sig"),
   })
 
-  return valid
-    ? evaluateRedirectTarget({
-        to,
-        displayedText,
-        alwaysWarnDomains: parseDomainList("mybank.com"),
-      })
-    : ("forged" as const)
+  return valid ? evaluateRedirectTarget(to) : ("forged" as const)
 }
 
 function firstHref(html: string): string {
@@ -68,31 +61,45 @@ function firstHref(html: string): string {
 }
 
 describe("sanitize, sign, click", () => {
-  it("lets an honest link straight through", async () => {
+  it("confirms an honest link", async () => {
     const { html } = await render(
       '<a href="https://example.com/docs">example.com/docs</a>'
     )
 
-    expect(await click(firstHref(html))).toMatchObject({ kind: "allow" })
+    expect(await click(firstHref(html))).toMatchObject({ kind: "confirm" })
   })
 
-  it("warns on a link whose label claims another host", async () => {
-    const { html } = await render(
-      '<a href="https://evil.example/login">https://mybank.com/login</a>'
-    )
+  it("confirms links whose visible label hides the real host", async () => {
+    // Hidden text makes the server-side label disagree with what the reader
+    // sees: these used to read as harmless and skip the confirmation.
+    for (const [href, label] of [
+      [
+        "https://bank.com.evil.example/login",
+        'bank.com<span style="display:none">.evil.example</span>',
+      ],
+      [
+        "https://evil.example/login",
+        'mybank<span style="font-size:0"> </span>.com',
+      ],
+    ]) {
+      const { html } = await render(`<a href="${href}">${label}</a>`)
+      const decision = await click(firstHref(html))
 
-    expect(await click(firstHref(html))).toMatchObject({
-      kind: "warn",
-      reasons: ["text_host_mismatch"],
-    })
+      expect(decision).toMatchObject({ kind: "confirm" })
+      expect(
+        decision !== "forged" && decision.kind === "confirm"
+          ? decision.destination.href
+          : null
+      ).toBe(href)
+    }
   })
 
   it("detects a label swapped after signing", async () => {
     const { html } = await render(
       '<a href="https://evil.example/login">https://mybank.com/login</a>'
     )
-    // An attacker who strips the label to suppress the warning breaks the
-    // signature, because the label is bound into it.
+    // The confirmation page shows the label, so it is bound into the
+    // signature: stripping or swapping it breaks the link.
     const tampered = firstHref(html).replace(/&(?:amp;)?text=[^&]*/, "")
 
     expect(tampered).not.toBe(firstHref(html))

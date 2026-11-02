@@ -25,14 +25,15 @@ which point somewhere else. This library handles all three, in layers:
 
 - **Sanitizes** with a strict DOMPurify allowlist. Scripts, event handlers,
   forms, iframes, SVG and `<style>` blocks are dropped, and inline styles are
-  filtered down to presentational properties, so senders can't overlay a link
-  with fake content.
+  filtered down to presentational properties, so sender CSS can't load
+  anything from a URL.
 - **Blocks remote images** by default (no tracking pixels on open), with an
   opt-in mode that routes them through your image proxy.
-- **Routes every link through a signed interstitial.** The signature binds the
-  link to the message, the exact destination and the visible label, so
-  `evaluateRedirectTarget` can warn when a label claims a different host than
-  the real destination, and the label can't be stripped to silence it.
+- **Confirms every link on your server.** Each link points to a signed
+  confirmation page headed by the real destination host. The signature binds
+  the link to the message, the exact destination and the link text, so none
+  of them can be swapped. The label never decides anything: hidden text and
+  CSS make what the reader sees unknowable on the server.
 - **Gives you a strict CSP** for the sandboxed iframe the body renders in, so
   anything that slips past sanitizing still can't run or phone home.
 
@@ -51,8 +52,8 @@ A full integration has three parts:
 
 1. **A body route** that sanitizes the message, signs every link, and serves
    the result with the frame CSP.
-2. **A redirect route** that verifies the signature and decides whether to
-   send the reader straight through or show a warning.
+2. **A redirect route** that verifies the signature and shows a confirmation
+   page headed by the destination host.
 3. **A sandboxed iframe** in your UI that loads the body route.
 
 [examples/fetch-handler.ts](examples/fetch-handler.ts) is a complete, tested
@@ -65,7 +66,6 @@ import {
   buildRedirectUrl,
   createTargetSigner,
   evaluateRedirectTarget,
-  parseDomainList,
   sanitizeInboundHtml,
   verifyTargetSignature,
 } from "safe-email-html"
@@ -80,7 +80,7 @@ const { html } = await sanitizeInboundHtml({
       purpose: "redirect",
       messageId: message.id,
       target: url,
-      context: boundDisplayedLinkText(displayedText, url),
+      context: boundDisplayedLinkText(displayedText),
     })
     return `${buildRedirectUrl({ to: url, messageId: message.id, displayedText })}&sig=${sig}`
   },
@@ -105,13 +105,9 @@ const valid = await verifyTargetSignature({
 })
 if (!valid) return new Response("Invalid link signature.", { status: 403 })
 
-const decision = evaluateRedirectTarget({
-  to: params.get("to") ?? "",
-  displayedText: params.get("text"),
-  alwaysWarnDomains: parseDomainList("mybank.com, acme.example"),
-})
-// decision.kind is "allow" (302 to decision.destination),
-// "warn" (show claimed label vs. real destination), or "refused" (400).
+const decision = evaluateRedirectTarget(params.get("to") ?? "")
+// decision.kind is "confirm" (show a page headed by decision.destination.host,
+// with a link to continue) or "refused" (400). HTML-escape what you show.
 ```
 
 ```html
@@ -130,10 +126,17 @@ A valid signature only proves your server emitted the URL.
 Images are blocked by default. The original URL is kept in
 `data-original-src`, and `hasRemoteImages` tells you whether to offer a
 "load images" button. To load them, pass `remoteImages: "proxied"` and a
-`buildRemoteImageUrl` that signs with `purpose: "img-proxy"`. Your proxy
-should verify the signature, fetch without cookies, enforce size and content
-type limits, and never forward the reader's IP. The default path is
-`/api/img-proxy`, and `buildImgProxyUrl({ url, messageId, path })` builds it.
+`buildRemoteImageUrl` that signs with `purpose: "img-proxy"`. At most 20
+distinct images are signed per render.
+
+The sandboxed frame has an opaque origin, so its image requests carry no
+`SameSite=Lax` session cookie. Bind the reader and an expiry into the
+signature's `context` and authorize the proxy from that, not from the
+session. The proxy must also follow redirects manually, refuse private
+addresses, serve only PNG, JPEG, GIF and WebP identified by their bytes, and
+put a deadline on the fetch. [The threat model](docs/threat-model.md) has the
+full list. The default path is `/api/img-proxy`, and
+`buildImgProxyUrl({ url, messageId, path })` builds it.
 
 ### Attachments
 
@@ -149,12 +152,12 @@ extension, because senders often label executables as
 | `sanitizeInboundHtml(input)` | Sanitize and rewrite a body. Returns `{ html, hasRemoteImages }`. |
 | `createTargetSigner(secret)` | Derive the key once and return a signing function. |
 | `signTarget(input)` / `verifyTargetSignature(input)` | One-off signing and constant-time verification. |
-| `evaluateRedirectTarget(input)` | Decide `allow`, `warn` (with reasons) or `refused` for a clicked link. |
-| `boundDisplayedLinkText(text, to?)` | The exact label string to bind into a redirect signature. |
-| `buildRedirectUrl` / `buildImgProxyUrl` | Build interstitial and proxy URLs. Paths are configurable. |
+| `evaluateRedirectTarget(to)` | `confirm` (with the parsed destination) or `refused` for a clicked link. |
+| `boundDisplayedLinkText(text)` | The exact link text to bind into a redirect signature. |
+| `buildRedirectUrl` / `buildImgProxyUrl` | Build confirmation-page and proxy URLs. Paths are configurable. |
 | `buildMessageFrameCsp()` / `buildMessageFrameCspReportOnly(uri?)` | CSP for the frame document. |
 | `isExecutableAttachment(input)` | Whether an attachment needs a download confirmation. |
-| `parseDomainList`, `hostMatchesDomain`, `canonicalizeHost`, `extractDisplayedHosts`, `isRemoteUrl`, `stripUrlControlCharacters` | The URL helpers the policy is built from. |
+| `parseDomainList`, `hostMatchesDomain`, `hostMatchesAnyDomain`, `canonicalizeHost`, `isRemoteUrl`, `stripUrlControlCharacters` | The URL helpers the policy is built from. |
 
 Every export has TSDoc comments with the reasoning behind its rules.
 

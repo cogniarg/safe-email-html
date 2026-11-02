@@ -160,16 +160,15 @@ function delegateInstanceMethod(prototype: object, name: string): void {
  * Defense layers, in order:
  * 1. DOMPurify with an explicit tag/attribute allowlist (scripts, event
  *    handlers, javascript: URIs, <object>/<embed>/<base>/forms/svg/mathml
- *    never survive). <style> is dropped too: stylesheet rules can spoof
- *    the visible link label via pseudo-element content, and inline
- *    style="" attributes cannot. Styling email bodies via inline styles is
- *    what senders already do for client compatibility.
+ *    never survive). <style> is dropped too: selectors and pseudo-element
+ *    content are far harder to filter than inline style="" declarations,
+ *    and styling email bodies via inline styles is what senders already do
+ *    for client compatibility.
  * 2. A rewrite pass over the sanitized DOM: remote images are disabled (or
  *    routed through the image proxy when the reader opted in), every
- *    http(s) link is routed through the redirect interstitial, and inline
+ *    http(s) link is routed through the redirect confirmation, and inline
  *    styles are filtered down to a presentational property allowlist so
- *    sender CSS cannot overlay the clickable pixels of a rewritten link or
- *    paint pixels from a URL.
+ *    sender CSS cannot paint pixels from a URL.
  * 3. The iframe sandbox and the strict CSP served with the rendered
  *    document (see url-policy.ts) backstop anything that slips through.
  */
@@ -188,6 +187,13 @@ export const MAX_SANITIZED_HTML_CHARS = 1_000_000
  */
 export const MAX_REWRITTEN_REMOTE_LINKS = 512
 
+/**
+ * Upper bound on distinct remote images one opted-in render proxies; each
+ * costs a signature here and an upstream fetch in the proxy. Repeats of an
+ * image reuse its URL, and images past the limit stay blank.
+ */
+export const MAX_PROXIED_REMOTE_IMAGES = 20
+
 /** Whether remote images render via the proxy or stay disabled. */
 export type RemoteImageMode = "blocked" | "proxied"
 
@@ -199,6 +205,9 @@ export interface SanitizeInboundHtmlInput {
    * Builds the src used for an opted-in remote image. Pass a signer here
    * (see `createTargetSigner`) so image-proxy URLs are bound to this message
    * and this exact image URL, and have the proxy reject anything unsigned.
+   * The sandboxed frame has an opaque origin, so the browser sends no
+   * `SameSite=Lax` session cookie with these requests: bind the reader and
+   * an expiry into the signature's `context` and authorize from that.
    * Defaults to the unsigned URL shape, which is only safe for callers that
    * inspect output without serving it.
    */
@@ -382,7 +391,7 @@ async function rewriteImages(
   buildRemoteImageUrl: (url: string) => Promise<string> | string
 ): Promise<boolean> {
   let hasRemoteImages = false
-  const linkedImages = new Set(document.querySelectorAll("a img"))
+  const proxiedUrls = new Map<string, string>()
 
   for (const image of document.querySelectorAll("img")) {
     const source = image.getAttribute("src")
@@ -390,10 +399,9 @@ async function rewriteImages(
     if (!source || !isRemoteUrl(source)) {
       // Every non-remote src is blanked. Schemeless srcs (including the
       // empty string) resolve against the body route itself, so a message
-      // could fan out authenticated same-origin requests on every open;
-      // data: URIs can paint a trusted-looking link label that never
-      // entered the signed redirect text. The frame CSP's img-src excludes
-      // data: as the backstop.
+      // could fan out authenticated same-origin requests on every open.
+      // The frame CSP's img-src excludes data:, so data: URIs could not
+      // load anyway.
       if (source !== null) {
         image.setAttribute("src", "about:blank")
       }
@@ -405,12 +413,18 @@ async function rewriteImages(
     const absoluteSource = absolutizeRemoteUrl(source)
 
     image.setAttribute("data-original-src", absoluteSource)
-    image.setAttribute(
-      "src",
-      remoteImages === "proxied" && !linkedImages.has(image)
-        ? await buildRemoteImageUrl(absoluteSource)
-        : "about:blank"
-    )
+    let proxiedUrl = proxiedUrls.get(absoluteSource)
+
+    if (
+      remoteImages === "proxied" &&
+      proxiedUrl === undefined &&
+      proxiedUrls.size < MAX_PROXIED_REMOTE_IMAGES
+    ) {
+      proxiedUrl = await buildRemoteImageUrl(absoluteSource)
+      proxiedUrls.set(absoluteSource, proxiedUrl)
+    }
+
+    image.setAttribute("src", proxiedUrl ?? "about:blank")
   }
 
   return hasRemoteImages
@@ -459,10 +473,10 @@ async function rewriteLinks(
 }
 
 /**
- * The label a reader actually sees on a link. With remote images blocked,
- * an image-only anchor renders its alt text, so a spoofed
- * `alt="https://mybank.com"` is exactly as visible as text content and must
- * be bound into the signed redirect text the same way.
+ * The link text shown on the confirmation page: the anchor's textContent
+ * plus its image alt text, which an image-only anchor renders while remote
+ * images are blocked. textContent includes CSS-hidden text, so this is not
+ * the label the browser displays, and nothing decides on it.
  */
 function displayedLinkLabel(anchor: SanitizerElement): string {
   const parts = [anchor.textContent ?? ""]
@@ -519,14 +533,12 @@ function extractDocumentBody(html: string): string {
 }
 
 /**
- * Inline style properties allowed to survive sanitization.
- * Purely presentational: nothing here can reposition content over other
- * elements (no position/transform/z-index/inset/float), so sender CSS
- * cannot overlay the clickable pixels of a rewritten link with pixels that
- * disagree with the signed label. Hiding content (display, opacity,
- * visibility) is allowed — visible text is always a subset of the signed
- * textContent, so hiding cannot forge a label claim — and it is what the
- * standard hidden-preheader idiom relies on.
+ * Inline style properties allowed to survive sanitization: the
+ * presentational set real email uses, including the display/opacity/
+ * visibility trio the hidden-preheader idiom relies on. Sender CSS only
+ * reaches sender content inside the frame, and every external link is
+ * confirmed with its real destination, so a misleading label cannot send
+ * the reader anywhere unannounced.
  */
 const ALLOWED_STYLE_PROPERTIES = new Set([
   "background",
@@ -607,9 +619,8 @@ const ALLOWED_STYLE_PROPERTIES = new Set([
 
 /**
  * Rejected anywhere in a declaration value. url()/image-set()/cross-fade()
- * paint sender-controlled pixels — a data: SVG can spoof a link label past
- * the signed textContent, and a remote background would bypass the image
- * proxy. Comments and backslash escapes could smuggle those functions past
+ * paint sender-controlled pixels, and a remote background would bypass the
+ * image proxy. Comments and backslash escapes could smuggle those functions past
  * this check (a comment split inside `url(` or a `\75rl(...)` identifier
  * escape), so they are rejected outright. The frame CSP's img-src (self
  * only, no data:) backstops whatever CSS image syntax this misses.
@@ -619,9 +630,7 @@ const FORBIDDEN_STYLE_VALUE =
 
 /**
  * Filters one style attribute down to the allowlisted declarations, or
- * `null` when nothing survives. Negative margins are rejected because they
- * are the one allowlisted mechanism that could pull sender content over a
- * rewritten link's clickable area.
+ * `null` when nothing survives.
  */
 function sanitizeStyleAttribute(css: string): string | null {
   const kept: Array<string> = []
@@ -639,8 +648,7 @@ function sanitizeStyleAttribute(css: string): string | null {
     if (
       value === "" ||
       !ALLOWED_STYLE_PROPERTIES.has(property) ||
-      FORBIDDEN_STYLE_VALUE.test(value) ||
-      (property.startsWith("margin") && value.includes("-"))
+      FORBIDDEN_STYLE_VALUE.test(value)
     ) {
       continue
     }

@@ -13,7 +13,6 @@ const messages: Record<string, string> = {
 const handle = createHandler({
   secret: "test-secret-with-enough-entropy",
   loadMessageHtml: async (id) => messages[id] ?? null,
-  alwaysWarnDomains: "acme.example",
 })
 
 async function bodyOf(id: string) {
@@ -38,21 +37,21 @@ describe("examples/fetch-handler", () => {
     expect(html).toContain("/api/redirect?to=")
   })
 
-  it("redirects honest links", async () => {
-    const response = await follow(await bodyOf("honest"))
+  it("confirms every link, headed by the real host", async () => {
+    const honest = await (await follow(await bodyOf("honest"))).text()
+    const phish = await (await follow(await bodyOf("phish"))).text()
 
-    expect(response.status).toBe(302)
-    expect(response.headers.get("location")).toBe("https://example.com/docs")
+    expect(honest).toContain("<h1>This link opens example.com</h1>")
+    expect(honest).toContain('href="https://example.com/docs"')
+    expect(phish).toContain("<h1>This link opens evil.example</h1>")
+    expect(phish).toContain("<bdi>https://mybank.com/login</bdi>")
   })
 
-  it("warns on spoofed links", async () => {
-    const response = await follow(await bodyOf("phish"))
+  it("escapes the link text on the confirmation page", async () => {
+    messages.markup = '<a href="https://example.com">&lt;img src=x&gt;</a>'
+    const page = await (await follow(await bodyOf("markup"))).text()
 
-    expect(await response.json()).toEqual({
-      destination: "https://evil.example/login",
-      claimed: "https://mybank.com/login",
-      reasons: ["text_host_mismatch"],
-    })
+    expect(page).toContain("<bdi>&lt;img src=x&gt;</bdi>")
   })
 
   it("rejects forged redirect links", async () => {

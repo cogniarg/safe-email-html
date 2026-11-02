@@ -3,7 +3,7 @@
  * Cloudflare Workers, Bun, Deno and Node.js 20+ (behind any router).
  *
  *   GET /messages/:id/body   the sanitized body, served into a sandboxed iframe
- *   GET /api/redirect        the signed link interstitial
+ *   GET /api/redirect        the signed link confirmation page
  *
  * Authorization and message storage are yours: `loadMessageHtml` stands in
  * for them. Check that the signed-in reader may read the message in BOTH
@@ -15,7 +15,6 @@ import {
   buildRedirectUrl,
   createTargetSigner,
   evaluateRedirectTarget,
-  parseDomainList,
   sanitizeInboundHtml,
   verifyTargetSignature,
 } from "../src/index.js"
@@ -23,13 +22,9 @@ import {
 export interface Options {
   secret: string
   loadMessageHtml: (messageId: string) => Promise<string | null>
-  /** Destinations that always get a warning, e.g. "mybank.com, acme.example" */
-  alwaysWarnDomains?: string
 }
 
 export function createHandler(options: Options) {
-  const alwaysWarnDomains = parseDomainList(options.alwaysWarnDomains)
-
   async function renderBody(messageId: string): Promise<Response> {
     const html = await options.loadMessageHtml(messageId)
 
@@ -46,9 +41,9 @@ export function createHandler(options: Options) {
           purpose: "redirect",
           messageId,
           target: url,
-          // Bind the exact label the URL carries, so the warning decision
-          // can't be changed by stripping or swapping it.
-          context: boundDisplayedLinkText(displayedText, url),
+          // Bind the exact label the URL carries, so the text the
+          // confirmation page shows can't be stripped or swapped.
+          context: boundDisplayedLinkText(displayedText),
         })
 
         return `${buildRedirectUrl({ to: url, messageId, displayedText })}&sig=${signature}`
@@ -85,29 +80,33 @@ export function createHandler(options: Options) {
       return new Response("Invalid link signature.", { status: 403 })
     }
 
-    const decision = evaluateRedirectTarget({
-      to,
-      displayedText,
-      alwaysWarnDomains,
-    })
+    const decision = evaluateRedirectTarget(to)
 
-    switch (decision.kind) {
-      case "refused":
-        return new Response("This link cannot be opened.", { status: 400 })
-      case "allow":
-        return Response.redirect(decision.destination.href, 302)
-      case "warn":
-        // Render your own interstitial: show the claimed label next to the
-        // real destination and let the reader decide.
-        return new Response(
-          JSON.stringify({
-            destination: decision.destination.href,
-            claimed: displayedText,
-            reasons: decision.reasons,
-          }),
-          { headers: { "content-type": "application/json" } }
-        )
+    if (decision.kind === "refused") {
+      return new Response("This link cannot be opened.", { status: 400 })
     }
+
+    // Every link is confirmed, headed by the real host. The link text
+    // includes CSS-hidden parts, so show it as information, never as what
+    // the reader saw.
+    const host = escapeHtml(decision.destination.host)
+    const href = escapeHtml(decision.destination.href)
+    const label = displayedText
+      ? `<p>Link text in the email: <bdi>${escapeHtml(displayedText)}</bdi></p>`
+      : ""
+
+    return new Response(
+      `<!DOCTYPE html><meta charset="utf-8"><h1>This link opens ${host}</h1>${label}<a rel="noopener noreferrer" href="${href}">Continue to ${host}</a>`,
+      {
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "content-security-policy": "default-src 'none'",
+          "x-content-type-options": "nosniff",
+          "referrer-policy": "no-referrer",
+          "cache-control": "private, no-store",
+        },
+      }
+    )
   }
 
   return async (request: Request): Promise<Response> => {
@@ -124,4 +123,13 @@ export function createHandler(options: Options) {
 
     return new Response("Not found", { status: 404 })
   }
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;")
 }

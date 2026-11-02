@@ -6,7 +6,7 @@ import {
   buildMessageFrameCspReportOnly,
   buildRedirectUrl,
   evaluateRedirectTarget,
-  extractDisplayedHosts,
+  hostMatchesAnyDomain,
   isExecutableAttachment,
   isRemoteUrl,
   MAX_DISPLAYED_LINK_TEXT_CHARS,
@@ -41,233 +41,44 @@ describe("isRemoteUrl", () => {
 })
 
 describe("evaluateRedirectTarget", () => {
-  const noWarnList = new Set<string>()
-
-  it("refuses non-http(s) destinations", () => {
-    expect(
-      evaluateRedirectTarget({
-        to: "javascript:alert(1)",
-        displayedText: null,
-        alwaysWarnDomains: noWarnList,
-      })
-    ).toEqual({ kind: "refused", reason: "unsupported_scheme" })
-    expect(
-      evaluateRedirectTarget({
-        to: "not a url",
-        displayedText: null,
-        alwaysWarnDomains: noWarnList,
-      })
-    ).toEqual({ kind: "refused", reason: "invalid_url" })
-  })
-
-  it("allows plain links whose text is not URL-shaped", () => {
-    const decision = evaluateRedirectTarget({
-      to: "https://example.com/docs",
-      displayedText: "read the docs",
-      alwaysWarnDomains: noWarnList,
+  it("refuses non-http(s) and unparsable destinations", () => {
+    expect(evaluateRedirectTarget("javascript:alert(1)")).toEqual({
+      kind: "refused",
+      reason: "unsupported_scheme",
     })
-
-    expect(decision.kind).toBe("allow")
-  })
-
-  it("warns when displayed text claims a different host", () => {
-    const decision = evaluateRedirectTarget({
-      to: "https://evil.example/login",
-      displayedText: "https://mybank.com",
-      alwaysWarnDomains: noWarnList,
+    expect(evaluateRedirectTarget("ftp://example.com/file")).toEqual({
+      kind: "refused",
+      reason: "unsupported_scheme",
     })
-
-    expect(decision).toMatchObject({
-      kind: "warn",
-      reasons: ["text_host_mismatch"],
+    expect(evaluateRedirectTarget("not a url")).toEqual({
+      kind: "refused",
+      reason: "invalid_url",
     })
   })
 
-  it("warns when the displayed host is followed directly by a query or fragment", () => {
-    for (const displayedText of [
-      "https://mybank.com?reset",
-      "https://mybank.com#login",
-    ]) {
-      expect(
-        evaluateRedirectTarget({
-          to: "https://evil.example/login",
-          displayedText,
-          alwaysWarnDomains: noWarnList,
-        })
-      ).toMatchObject({ kind: "warn", reasons: ["text_host_mismatch"] })
+  it("confirms every http(s) destination with its canonical URL", () => {
+    for (const [to, host] of [
+      ["https://example.com/docs", "example.com"],
+      ["http://EXAMPLE.com:8080/x", "example.com:8080"],
+      ["https://bank.com@evil.example/login", "evil.example"],
+      ["https://раураl.com/login", "xn--l-7sba6dbr.com"],
+    ] as const) {
+      const decision = evaluateRedirectTarget(to)
+
+      expect(decision.kind).toBe("confirm")
+      expect(decision.kind === "confirm" && decision.destination.host).toBe(
+        host
+      )
     }
-  })
-
-  it("warns when the displayed host is wrapped in ordinary punctuation", () => {
-    for (const displayedText of [
-      "(https://mybank.com)",
-      "go to https://mybank.com, then log in",
-      "https://mybank.com...",
-    ]) {
-      expect(
-        evaluateRedirectTarget({
-          to: "https://evil.example/login",
-          displayedText,
-          alwaysWarnDomains: noWarnList,
-        })
-      ).toMatchObject({ kind: "warn", reasons: ["text_host_mismatch"] })
-    }
-  })
-
-  it("warns when the displayed label is a subdomain of the destination", () => {
-    expect(
-      evaluateRedirectTarget({
-        to: "https://evil.example.com/login",
-        displayedText: "https://mybank.com.evil.example.com/login",
-        alwaysWarnDomains: noWarnList,
-      })
-    ).toMatchObject({ kind: "warn", reasons: ["text_host_mismatch"] })
-  })
-
-  it("treats www and the apex as the same displayed host", () => {
-    expect(
-      evaluateRedirectTarget({
-        to: "https://example.com/path",
-        displayedText: "https://www.example.com/path",
-        alwaysWarnDomains: noWarnList,
-      }).kind
-    ).toBe("allow")
-  })
-
-  it("does not warn when displayed text matches the destination host", () => {
-    const decision = evaluateRedirectTarget({
-      to: "https://www.example.com/path",
-      displayedText: "example.com/path",
-      alwaysWarnDomains: noWarnList,
-    })
-
-    expect(decision.kind).toBe("allow")
-  })
-
-  it("warns for destinations on the always-warn list, including subdomains", () => {
-    const alwaysWarnDomains = parseDomainList("acme.example, mybank.com")
-
-    expect(
-      evaluateRedirectTarget({
-        to: "https://intranet.acme.example/reset",
-        displayedText: "intranet.acme.example/reset",
-        alwaysWarnDomains,
-      })
-    ).toMatchObject({ kind: "warn", reasons: ["always_warn_domain"] })
-  })
-
-  it("stacks warning reasons", () => {
-    const decision = evaluateRedirectTarget({
-      to: "https://evil.example/",
-      displayedText: "https://mybank.com",
-      alwaysWarnDomains: parseDomainList("evil.example"),
-    })
-
-    expect(decision).toMatchObject({
-      kind: "warn",
-      reasons: ["text_host_mismatch", "always_warn_domain"],
-    })
-  })
-
-  it("warns when a hidden host precedes a mismatching visible host", () => {
-    // anchor.textContent for
-    // <a href="https://evil.example">
-    //   <span style="display:none">evil.example </span>https://mybank.com
-    // </a>: the hidden host matches the destination, but the label the user
-    // reads (mybank.com) does not, so the warning must still fire.
-    const decision = evaluateRedirectTarget({
-      to: "https://evil.example/",
-      displayedText: "evil.example https://mybank.com",
-      alwaysWarnDomains: noWarnList,
-    })
-
-    expect(decision).toMatchObject({
-      kind: "warn",
-      reasons: ["text_host_mismatch"],
-    })
-  })
-
-  it("warns when displayed text uses userinfo to spoof the host", () => {
-    const decision = evaluateRedirectTarget({
-      to: "https://evil.example/login",
-      displayedText: "https://mybank.com@evil.example/login",
-      alwaysWarnDomains: noWarnList,
-    })
-
-    expect(decision).toMatchObject({
-      kind: "warn",
-      reasons: ["text_host_mismatch"],
-    })
-  })
-
-  it("warns when displayed text claims a Unicode hostname", () => {
-    const decision = evaluateRedirectTarget({
-      to: "https://evil.example/login",
-      displayedText: "https://раураl.com/login",
-      alwaysWarnDomains: noWarnList,
-    })
-
-    expect(decision).toMatchObject({
-      kind: "warn",
-      reasons: ["text_host_mismatch"],
-    })
   })
 })
 
-describe("host canonicalization", () => {
-  it("treats trailing-dot destinations as their canonical host", () => {
-    expect(
-      evaluateRedirectTarget({
-        to: "https://intranet.acme.example./reset",
-        displayedText: null,
-        alwaysWarnDomains: parseDomainList("acme.example"),
-      })
-    ).toMatchObject({ kind: "warn", reasons: ["always_warn_domain"] })
-  })
+describe("hostMatchesAnyDomain", () => {
+  it("treats trailing-dot hosts as their canonical host", () => {
+    const blocked = parseDomainList("acme.example")
 
-  it("does not flag matching displayed text with a trailing dot", () => {
-    expect(
-      evaluateRedirectTarget({
-        to: "https://example.com/path",
-        displayedText: "example.com./path",
-        alwaysWarnDomains: new Set(),
-      }).kind
-    ).toBe("allow")
-  })
-
-  it("still warns when trailing-dot displayed text claims another host", () => {
-    expect(
-      evaluateRedirectTarget({
-        to: "https://evil.example/login",
-        displayedText: "https://mybank.com./login",
-        alwaysWarnDomains: new Set(),
-      })
-    ).toMatchObject({ kind: "warn", reasons: ["text_host_mismatch"] })
-  })
-})
-
-describe("extractDisplayedHosts", () => {
-  it("extracts hosts from URL-shaped and bare-domain text", () => {
-    expect(extractDisplayedHosts("https://mybank.com/login")).toEqual([
-      "mybank.com",
-    ])
-    expect(extractDisplayedHosts("visit mybank.com now")).toEqual([
-      "mybank.com",
-    ])
-    expect(extractDisplayedHosts("click here")).toEqual([])
-    expect(extractDisplayedHosts(null)).toEqual([])
-  })
-
-  it("returns every host claimed in the text, in order", () => {
-    expect(
-      extractDisplayedHosts("trusted.example@evil.example or mybank.com")
-    ).toEqual(["trusted.example", "evil.example", "mybank.com"])
-  })
-
-  it("normalizes Unicode host labels through IDNA", () => {
-    expect(extractDisplayedHosts("https://раураl.com/login")).toEqual([
-      "xn--l-7sba6dbr.com",
-    ])
+    expect(hostMatchesAnyDomain("intranet.acme.example.", blocked)).toBe(true)
+    expect(hostMatchesAnyDomain("acme.example.evil.test", blocked)).toBe(false)
   })
 })
 
@@ -309,35 +120,6 @@ describe("boundDisplayedLinkText", () => {
     // A lone surrogate would be coerced to U+FFFD here, so a clean round-trip
     // proves the signed text and the serialized `text` param stay identical.
     expect(new URLSearchParams({ text: bounded }).get("text")).toBe(bounded)
-  })
-
-  it("re-appends hosts the length cap would hide from the mismatch check", () => {
-    const text = `${"hidden padding ".repeat(20)}https://mybank.com/reset`
-    const bounded = boundDisplayedLinkText(text)
-
-    expect(text.indexOf("mybank.com")).toBeGreaterThan(
-      MAX_DISPLAYED_LINK_TEXT_CHARS
-    )
-    expect(bounded).toContain("mybank.com")
-  })
-
-  it("preserves mismatching hosts ahead of destination-matching decoys", () => {
-    // Five parent-domain decoys all look like the deep destination, so a
-    // count-based cap alone would drop the one spoofed host.
-    const decoys = [
-      "b.c.d.e.evil.example",
-      "c.d.e.evil.example",
-      "d.e.evil.example",
-      "e.evil.example",
-      "evil.example",
-    ].join(" ")
-    const text = `${"x".repeat(220)} ${decoys} https://mybank.com`
-    const bounded = boundDisplayedLinkText(
-      text,
-      "https://a.b.c.d.e.evil.example/login"
-    )
-
-    expect(bounded).toContain("mybank.com")
   })
 })
 

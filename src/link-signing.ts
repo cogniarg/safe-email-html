@@ -17,7 +17,8 @@ export type TargetPurpose = "img-proxy" | "redirect"
 export interface TargetSignatureInput {
   /**
    * Extra data bound into the signature beyond the target itself, e.g. the
-   * displayed link text whose value the warning interstitial depends on.
+   * link text the confirmation page shows, or the reader and expiry of an
+   * image grant.
    */
   context?: string
   purpose: TargetPurpose
