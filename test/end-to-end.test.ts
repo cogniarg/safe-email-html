@@ -1,36 +1,7 @@
 import { describe, expect, it } from "vitest"
 
-import {
-  boundDisplayedLinkText,
-  buildRedirectUrl,
-  createTargetSigner,
-  evaluateRedirectTarget,
-  sanitizeInboundHtml,
-  verifyTargetSignature,
-} from "../src/index.js"
-
-const SECRET = "test-secret-with-enough-entropy"
-const MESSAGE_ID = "msg_42"
-
-/** Renders a body the way the README recommends: every link signed. */
-async function render(html: string) {
-  const sign = await createTargetSigner(SECRET)
-
-  return sanitizeInboundHtml({
-    html,
-    messageId: MESSAGE_ID,
-    buildRedirectLinkUrl: async ({ url, displayedText }) => {
-      const signature = await sign({
-        purpose: "redirect",
-        messageId: MESSAGE_ID,
-        target: url,
-        context: boundDisplayedLinkText(displayedText),
-      })
-
-      return `${buildRedirectUrl({ to: url, messageId: MESSAGE_ID, displayedText })}&sig=${signature}`
-    },
-  })
-}
+import { evaluateRedirectTarget, verifyTargetSignature } from "../src/index.js"
+import { renderChecked, SECRET } from "./parser-differential.js"
 
 /** What a redirect endpoint does with a click on a rewritten link. */
 async function click(href: string) {
@@ -62,7 +33,7 @@ function firstHref(html: string): string {
 
 describe("sanitize, sign, click", () => {
   it("confirms an honest link", async () => {
-    const { html } = await render(
+    const { html } = await renderChecked(
       '<a href="https://example.com/docs">example.com/docs</a>'
     )
 
@@ -82,7 +53,7 @@ describe("sanitize, sign, click", () => {
         'mybank<span style="font-size:0"> </span>.com',
       ],
     ]) {
-      const { html } = await render(`<a href="${href}">${label}</a>`)
+      const { html } = await renderChecked(`<a href="${href}">${label}</a>`)
       const decision = await click(firstHref(html))
 
       expect(decision).toMatchObject({ kind: "confirm" })
@@ -95,7 +66,7 @@ describe("sanitize, sign, click", () => {
   })
 
   it("detects a label swapped after signing", async () => {
-    const { html } = await render(
+    const { html } = await renderChecked(
       '<a href="https://evil.example/login">https://mybank.com/login</a>'
     )
     // The confirmation page shows the label, so it is bound into the
@@ -107,7 +78,7 @@ describe("sanitize, sign, click", () => {
   })
 
   it("refuses a destination swapped after signing", async () => {
-    const { html } = await render(
+    const { html } = await renderChecked(
       '<a href="https://example.com/docs">example.com/docs</a>'
     )
     const tampered = firstHref(html).replace(

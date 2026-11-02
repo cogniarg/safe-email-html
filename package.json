@@ -32,7 +32,7 @@
   "files": [
     "dist",
     "src",
-    "docs",
+    "docs/threat-model.md",
     "NOTICE"
   ],
   "engines": {
@@ -54,6 +54,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.6.3",
     "@types/node": "26.6.5",
+    "parse5": "8.0.1",
     "typescript": "7.0.2",
     "vitest": "5.0.5",
     "wrangler": "4.153.0"
