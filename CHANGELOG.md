@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.1
+
+No code changes from 0.2.0. First release published from CI:
+
+- Published through npm trusted publishing (OIDC) with a provenance
+  attestation, so you can check the tarball was built from this repository
+  (`npm audit signatures`).
+- Releases are staged and go live only after a maintainer approves them with
+  2FA, so a pushed tag alone can't publish.
+
 ## 0.2.0
 
 Security release. Brings the library in line with Cogniar's email workspace,
