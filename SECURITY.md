@@ -29,3 +29,10 @@ as that document describes.
 Out of scope: problems that need the integrator to skip a step the threat
 model lists as their responsibility, such as serving the output outside the
 sandboxed iframe or not verifying signatures.
+
+## DOMPurify advisories
+
+Sanitizing rests on DOMPurify. When DOMPurify publishes a security fix, this
+package ships a patch release that raises the minimum of its `dompurify`
+range past the fixed version, so installing the latest patch of
+`safe-email-html` never resolves to a vulnerable DOMPurify.
