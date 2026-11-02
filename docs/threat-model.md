@@ -129,11 +129,34 @@ connect-src 'none'; script-src 'none'; form-action 'none';
 base-uri 'none'; frame-ancestors 'self'
 ```
 
-There are no scripts, and the only network access is same-origin images (your
-proxy). `img-src` deliberately excludes `data:`, so an image Layer 1 misses
-can't load without passing your proxy. Serve the frame with `sandbox="allow-popups
-allow-popups-to-escape-sandbox"` (no `allow-scripts`, no `allow-same-origin`),
-so links open in a normal tab and nothing in the frame can touch your app.
+There are no scripts, and the only subresource the frame can fetch is a
+same-origin image. `img-src` deliberately excludes `data:`, so an image Layer 1
+misses can't load without passing your server. Serve the frame with
+`sandbox="allow-popups allow-popups-to-escape-sandbox"` (no `allow-scripts`, no
+`allow-same-origin`).
+
+Together they block scripts, `javascript:` URLs, form submission,
+`<meta http-equiv="refresh">`, `<base href>`, nested frames and objects, and
+every subresource fetch except same-origin images. They don't contain
+everything. If the browser parses the body into a link Layer 1 never rewrote:
+
+- With `target="_blank"`, a click opens the raw destination in a normal tab,
+  with no confirmation page.
+- Without a target, a click navigates the frame itself. The new page keeps the
+  sandbox but loads remote content under its own server's CSP. The frame's CSP
+  can't stop this; only a `frame-src` policy on your app page can.
+
+Some other markup works without any link:
+
+- `<link rel="preconnect">` and `<link rel="dns-prefetch">` contact any host
+  without a click, which reveals the reader's IP or open time. No CSP directive
+  covers them.
+- `img-src 'self'` admits every path on your origin, not only the image proxy.
+- The sandbox is an iframe attribute, not part of the response. If the body
+  route is opened as a top-level page, it runs on your origin with no sandbox.
+
+[What the message frame's sandbox and CSP contain](research/frame-sandbox-csp.md#gaps-in-layer-3)
+lists all eight gaps, with spec and browser-source citations.
 
 ## What your app still has to do
 
