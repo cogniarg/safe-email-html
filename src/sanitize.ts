@@ -232,7 +232,9 @@ export interface SanitizedInboundHtml {
   hasRemoteImages: boolean
 }
 
-const ALLOWED_TAGS = [
+// Internal: read by the test suite's invariant check, never re-exported
+// from the package entry point.
+export const ALLOWED_TAGS = [
   "#text",
   "a",
   "abbr",
@@ -295,7 +297,9 @@ const ALLOWED_TAGS = [
   "wbr",
 ]
 
-const ALLOWED_ATTR = [
+// Internal: read by the test suite's invariant check, never re-exported
+// from the package entry point.
+export const ALLOWED_ATTR = [
   "align",
   "alt",
   "bgcolor",
@@ -539,8 +543,11 @@ function extractDocumentBody(html: string): string {
  * reaches sender content inside the frame, and every external link is
  * confirmed with its real destination, so a misleading label cannot send
  * the reader anywhere unannounced.
+ *
+ * Internal: read by the test suite's invariant check, never re-exported
+ * from the package entry point.
  */
-const ALLOWED_STYLE_PROPERTIES = new Set([
+export const ALLOWED_STYLE_PROPERTIES = new Set([
   "background",
   "background-color",
   "border",
