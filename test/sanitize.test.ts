@@ -168,6 +168,128 @@ describe("sanitizeInboundHtml", async () => {
     expect(html).not.toContain("<html")
   })
 
+  it("keeps the content of HTML5 structural elements", async () => {
+    const { html } = await sanitize(
+      "<section><p>Essential business content</p></section>"
+    )
+
+    expect(html).toBe("<section><p>Essential business content</p></section>")
+
+    for (const tag of [
+      "article",
+      "aside",
+      "footer",
+      "header",
+      "main",
+      "nav",
+      "section",
+    ]) {
+      const { html: nested } = await sanitize(
+        `<${tag} class="block"><p>inside ${tag}</p></${tag}>`
+      )
+
+      expect(nested).toBe(`<${tag} class="block"><p>inside ${tag}</p></${tag}>`)
+    }
+  })
+
+  it("gives structural elements only the global attribute allowlist", async () => {
+    const { html } = await sanitize(
+      '<section onclick="alert(1)" onmouseover="alert(2)" data-x="1" ' +
+        'aria-label="x" role="dialog" hidden tabindex="0" ' +
+        'style="color: red; position: fixed" title="t">' +
+        '<header onload="alert(3)" contenteditable="true">head</header>' +
+        '<nav popover="manual" inert>nav</nav>' +
+        '<main onfocus="alert(4)" autofocus>main</main>' +
+        "</section>"
+    )
+
+    expect(html).toBe(
+      '<section style="color: red" title="t">' +
+        "<header>head</header><nav>nav</nav><main>main</main></section>"
+    )
+  })
+
+  it("drops disallowed elements nested in structural elements with their content", async () => {
+    const { html } = await sanitize(
+      "<article><p>kept</p>" +
+        '<form action="https://evil.example/phish"><p>Enter your password</p>' +
+        '<input name="password"></form>' +
+        "<script>alert(1)</script>" +
+        "<svg><text>svg text</text></svg>" +
+        "<style>p{color:red}</style>" +
+        "</article>"
+    )
+
+    expect(html).toBe("<article><p>kept</p></article>")
+  })
+
+  it("renders a document that omits its body tags", async () => {
+    const { html } = await sanitize(
+      "<!doctype html><html><p>Essential business content</p></html>"
+    )
+
+    expect(html).toBe("<p>Essential business content</p>")
+  })
+
+  it("renders a document with a head and no body tags without leaking the head", async () => {
+    const { html } = await sanitize(
+      "<!DOCTYPE html><html><head>" +
+        "<title>head title</title>" +
+        '<meta charset="utf-8">' +
+        '<link rel="stylesheet" href="https://evil.example/x.css">' +
+        '<base href="https://evil.example/">' +
+        '<style>p::after { content: "style text" }</style>' +
+        '<script>alert("script text")</script>' +
+        "<noscript><p>noscript text</p></noscript>" +
+        "<template><p>template text</p></template>" +
+        "</head><p>Essential business content</p></html>"
+    )
+
+    expect(html).toBe("<p>Essential business content</p>")
+  })
+
+  it("does not let escaped head text turn into markup", async () => {
+    const { html } = await sanitize(
+      "<html><head>" +
+        "<title>&lt;/title&gt;&lt;p&gt;title leak&lt;/p&gt;</title>" +
+        "<style>&lt;/style&gt;&lt;p&gt;style leak&lt;/p&gt;</style>" +
+        "</head><p>Essential business content</p></html>"
+    )
+
+    expect(html).toBe("<p>Essential business content</p>")
+  })
+
+  it("keeps content stranded around the body tags", async () => {
+    const { html } = await sanitize(
+      "<html><head><title>t</title></head>" +
+        "<p>before body</p>" +
+        '<body style="color: #333333"><p>in body</p></body>' +
+        "<p>after body</p></html>" +
+        "<p>after html</p>"
+    )
+
+    expect(html).toBe(
+      '<div style="color: #333333"><p>before body</p><p>in body</p>' +
+        "<p>after body</p><p>after html</p></div>"
+    )
+  })
+
+  it("keeps content a parser left inside the head", async () => {
+    const { html } = await sanitize(
+      "<html><head><title>t</title><p>Essential business content</p></head></html>"
+    )
+
+    expect(html).toBe("<p>Essential business content</p>")
+  })
+
+  it("renders nothing for a document with only a head", async () => {
+    const { html } = await sanitize(
+      "<html><head><title>only a title</title><style>p{}</style></head></html>"
+    )
+
+    expect(html).toBe("")
+  })
+
   it("blanks schemeless, empty, and data: image sources", async () => {
     const { html } = await sanitize(
       '<img src="?images=remote"><img src=""><img src="data:image/gif;base64,R0lGOD">'
