@@ -41,7 +41,8 @@ allowlist of presentational properties:
   `float` and anything else off the list.
 - **Rejected by value:** `url()`, `image-set()`, `cross-fade()`,
   `expression()`, and CSS comments and backslash escapes, which could smuggle
-  the others past the check.
+  the others past the check. Control characters are ignored when matching, so
+  a name split by a tab or newline is still rejected.
 
 The filter does not try to stop sender CSS from making a link look like
 something else. Hidden text, negative margins, `letter-spacing` and
@@ -126,14 +127,17 @@ the iframe:
 ```
 default-src 'none'; img-src 'self'; style-src 'unsafe-inline';
 connect-src 'none'; script-src 'none'; form-action 'none';
-base-uri 'none'; frame-ancestors 'self'
+base-uri 'none'; frame-ancestors 'self';
+sandbox allow-popups allow-popups-to-escape-sandbox
 ```
 
 There are no scripts, and the only subresource the frame can fetch is a
 same-origin image. `img-src` deliberately excludes `data:`, so an image Layer 1
 misses can't load without passing your server. Serve the frame with
 `sandbox="allow-popups allow-popups-to-escape-sandbox"` (no `allow-scripts`, no
-`allow-same-origin`).
+`allow-same-origin`). The CSP's `sandbox` directive carries the same flags, so
+the body is sandboxed even when it is loaded outside the frame. Inside the
+frame the two combine, and the stricter of them wins for each flag.
 
 Together they block scripts, `javascript:` URLs, form submission,
 `<meta http-equiv="refresh">`, `<base href>`, nested frames and objects, and
@@ -152,8 +156,11 @@ Some other markup works without any link:
   without a click, which reveals the reader's IP or open time. No CSP directive
   covers them.
 - `img-src 'self'` admits every path on your origin, not only the image proxy.
-- The sandbox is an iframe attribute, not part of the response. If the body
-  route is opened as a top-level page, it runs on your origin with no sandbox.
+- If the body route is opened as a top-level page, the CSP's `sandbox`
+  directive still gives it an opaque origin and the same flags as the frame.
+  Browsers ignore that directive in a `Content-Security-Policy-Report-Only`
+  header, so `buildMessageFrameCspReportOnly()` leaves it out; serve the
+  enforced policy as well.
 
 [What the message frame's sandbox and CSP contain](research/frame-sandbox-csp.md#gaps-in-layer-3)
 lists all eight gaps, with spec and browser-source citations.

@@ -92,6 +92,32 @@ describe("sanitizeInboundHtml", async () => {
     expect(html).toContain('style="color: green"')
   })
 
+  it("strips forbidden CSS functions split by a tab, newline or other control", async () => {
+    const separators = ["\t", "\n", "\r", "\f", "\u0000", "\u000b", "\u007f"]
+    const functions = ["url(", "image-set(", "cross-fade(", "expression("]
+
+    for (const separator of separators) {
+      for (const name of functions) {
+        const split = `${name.slice(0, 2)}${separator}${name.slice(2)}`
+        const { html } = await sanitize(
+          `<p style="color: red; background: ${split}https://evil.example/x.png)">x</p>`
+        )
+
+        expect(html, JSON.stringify(split)).toContain('style="color: red"')
+      }
+    }
+  })
+
+  it("keeps allowlisted declarations that contain tabs or newlines", async () => {
+    const { html } = await sanitize(
+      '<p style="margin:\t0\n10px;\tfont-family:\tArial,\nsans-serif">ok</p>'
+    )
+
+    expect(html).toContain(
+      'style="margin: 0\n10px; font-family: Arial,\nsans-serif"'
+    )
+  })
+
   it("keeps presentational inline styles but drops properties off the allowlist", async () => {
     const { html } = await sanitize(
       '<div style="position:absolute;inset:0;background-color:#fff">' +
@@ -404,6 +430,26 @@ describe("sanitizeInboundHtml", async () => {
     expect(html).not.toContain("href=")
     expect(html).toContain("see the pictures")
     expect(html).toContain("and this")
+  })
+
+  it("strips empty and whitespace-only hrefs, which resolve to the body route", async () => {
+    const { html } = await sanitize(
+      '<a href="">empty</a>' +
+        '<a href="   ">spaces</a>' +
+        '<a href="\t\n">controls</a>' +
+        '<a href="https://example.com/ok">remote</a>' +
+        '<a href="mailto:jane@acme.example">mail</a>' +
+        '<a href="tel:+15551234567">call</a>'
+    )
+
+    expect(html.match(/href=/g)).toHaveLength(3)
+    expect(html).toContain("/api/redirect?to=")
+    expect(html).toContain('href="mailto:jane@acme.example"')
+    expect(html).toContain('href="tel:+15551234567"')
+    expect(html).not.toContain('href=""')
+    expect(html).toContain(">empty</a>")
+    expect(html).toContain(">spaces</a>")
+    expect(html).toContain(">controls</a>")
   })
 
   it("leaves mailto links unrewritten but still hardened", async () => {

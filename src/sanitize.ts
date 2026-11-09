@@ -462,10 +462,12 @@ async function rewriteLinks(
         )
         rewrittenRemoteLinks += 1
       }
-    } else if (href && !isAllowedDirectLink(href)) {
+    } else if (href !== null && !isAllowedDirectLink(href)) {
       // Only the explicitly non-web mail and telephone schemes may navigate
       // directly. Relative references could re-enter this route, while other
       // external schemes such as ftp: would bypass the signed interstitial.
+      // That includes an empty href (DOMPurify trims whitespace-only ones to
+      // empty), which resolves to the body document itself.
       anchor.removeAttribute("href")
     }
 
@@ -636,6 +638,17 @@ const FORBIDDEN_STYLE_VALUE =
   /url\s*\(|image-set|cross-fade|expression|\/\*|[\\<>]/i
 
 /**
+ * Removed from a value before it is tested against FORBIDDEN_STYLE_VALUE, so
+ * a function name split by a tab, newline, form feed or other control
+ * (`ur<TAB>l(`) is still caught. The browser's tokenizer already rejects
+ * such a split name; this keeps the filter from depending on that. Only
+ * the test sees the stripped value. The space is kept, since removing it
+ * could join ordinary words into a false match.
+ */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching controls is the point
+const STYLE_VALUE_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/g
+
+/**
  * Filters one style attribute down to the allowlisted declarations, or
  * `null` when nothing survives.
  */
@@ -655,7 +668,9 @@ function sanitizeStyleAttribute(css: string): string | null {
     if (
       value === "" ||
       !ALLOWED_STYLE_PROPERTIES.has(property) ||
-      FORBIDDEN_STYLE_VALUE.test(value)
+      FORBIDDEN_STYLE_VALUE.test(
+        value.replace(STYLE_VALUE_CONTROL_CHARACTERS, "")
+      )
     ) {
       continue
     }
