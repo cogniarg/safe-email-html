@@ -13,6 +13,20 @@
   `<style>` and `<script>` with its text.
 - CI now runs the built package on Deno and workerd as well as Node.js and
   Bun, so every runtime the README lists is tested.
+- **The frame CSP now sandboxes the body itself.** `buildMessageFrameCsp()`
+  adds `sandbox allow-popups allow-popups-to-escape-sandbox`, the flags the
+  README already prescribes for the iframe, so the header you serve on the
+  body route changes. Inside a correctly configured iframe nothing changes.
+  Opened any other way, such as a top-level tab, the body now gets an opaque
+  origin and the frame's restrictions instead of running on your origin.
+  `buildMessageFrameCspReportOnly()` leaves the directive out, since browsers
+  ignore `sandbox` in a report-only header; serve the enforced policy too.
+- Links with an empty or whitespace-only `href`, which resolve to the body
+  route itself, lose the `href` like other relative links.
+- Inline style values are checked for `url(`, `image-set`, `cross-fade` and
+  `expression` with control characters removed, so a name split by a tab,
+  newline or form feed (`ur<TAB>l(`) is rejected. Browsers already treated
+  such a value as inert.
 
 Breaking changes:
 
