@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Mail inside HTML5 structural elements now renders.** `<section>`,
+  `<article>`, `<header>`, `<footer>`, `<main>`, `<nav>` and `<aside>` were
+  missing from the tag allowlist, so a body wrapped in one sanitized to
+  nothing. They are allowed now, with the same attributes as every other tag.
+- **Documents without `<body>` tags now render.** `<html><p>…</p></html>`
+  sanitized to nothing, and content before or after the `<body>` element was
+  dropped. The sanitizer now keeps all of a document's content in order, as a
+  browser would, and still drops `<head>` metadata such as `<title>`,
+  `<style>` and `<script>` with its text.
 - CI now runs the built package on Deno and workerd as well as Node.js and
   Bun, so every runtime the README lists is tested.
 
