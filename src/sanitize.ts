@@ -556,27 +556,37 @@ function extractDocumentBody(html: string): string {
   const content: Array<SanitizerNode> = []
   let body: SanitizerContainerElement | undefined
 
-  const collect = (parent: SanitizerNode): void => {
-    for (const node of Array.from(parent.childNodes)) {
-      const name = node.nodeName.toUpperCase()
+  // An explicit stack rather than recursion: the input limit bounds
+  // characters, not depth, so nested wrappers must not grow the call stack.
+  // Children go on in reverse, so they come off in document order.
+  const pending: Array<SanitizerNode> = []
+  const pushChildren = (parent: SanitizerNode): void => {
+    const children = parent.childNodes
 
-      if (node.nodeType === TEXT_NODE) {
-        content.push(node)
-      } else if (node.nodeType !== ELEMENT_NODE) {
-        // Doctypes and comments render nothing.
-      } else if (DOCUMENT_WRAPPERS.has(name)) {
-        if (name === "BODY") {
-          body ??= node as SanitizerContainerElement
-        }
-
-        collect(node)
-      } else if (!DOCUMENT_METADATA.has(name)) {
-        content.push(node)
-      }
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      pending.push(children[index] as SanitizerNode)
     }
   }
 
-  collect(document)
+  pushChildren(document)
+
+  for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
+    const name = node.nodeName.toUpperCase()
+
+    if (node.nodeType === TEXT_NODE) {
+      content.push(node)
+    } else if (node.nodeType !== ELEMENT_NODE) {
+      // Doctypes and comments render nothing.
+    } else if (DOCUMENT_WRAPPERS.has(name)) {
+      if (name === "BODY") {
+        body ??= node as SanitizerContainerElement
+      }
+
+      pushChildren(node)
+    } else if (!DOCUMENT_METADATA.has(name)) {
+      content.push(node)
+    }
+  }
 
   const style = body?.getAttribute("style") ?? null
   const bgcolor = body?.getAttribute("bgcolor") ?? null

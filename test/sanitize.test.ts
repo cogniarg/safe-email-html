@@ -316,6 +316,14 @@ describe("sanitizeInboundHtml", async () => {
     expect(html).toBe("")
   })
 
+  it("unwraps document wrappers nested deeper than the call stack", async () => {
+    const { html } = await sanitize(
+      `${"<html><body>".repeat(20_000)}<p>Essential business content</p>`
+    )
+
+    expect(html).toBe("<p>Essential business content</p>")
+  })
+
   it("blanks schemeless, empty, and data: image sources", async () => {
     const { html } = await sanitize(
       '<img src="?images=remote"><img src=""><img src="data:image/gif;base64,R0lGOD">'
