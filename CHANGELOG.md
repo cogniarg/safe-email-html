@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.2
 
 - **Mail inside HTML5 structural elements now renders.** `<section>`,
   `<article>`, `<header>`, `<footer>`, `<main>`, `<nav>` and `<aside>` were
@@ -27,6 +27,9 @@
   `expression` with control characters removed, so a name split by a tab,
   newline or form feed (`ur<TAB>l(`) is rejected. Browsers already treated
   such a value as inert.
+- Deeply nested `<html>`, `<head>` or `<body>` wrappers no longer overflow
+  the call stack. About 10,000 nested wrappers (60 KB, under the input limit)
+  made the sanitizer throw; it now unwraps them without recursion.
 
 Breaking changes:
 
