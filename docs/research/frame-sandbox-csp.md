@@ -64,7 +64,7 @@ from the source at those commits.
 | Popup that keeps an opener (`rel=opener`, named target) | Partly | Chromium and WebKit refuse navigations through the opener; `postMessage` still works | [Chromium][cr-cannav-barth], [WebKit][wk-cannav] |
 | `<meta name=referrer>` | Not applicable | Opaque-origin documents send no referrer | [Determine request's referrer][referrer], [Chromium][cr-referrer] |
 | `<meta http-equiv=content-security-policy>`, `set-cookie` | Yes | A meta policy only adds restrictions; `set-cookie` is ignored | [Meta CSP][meta-csp], [Meta set-cookie][meta-set-cookie] |
-| Body route opened as a top-level page | No | The sandbox is an iframe attribute; the CSP has no `sandbox` directive | [iframe sandbox][iframe-sandbox], [CSP sandbox][csp-sandbox] |
+| Body route opened as a top-level page | No at the time of writing; yes since [#33][issue-33] | The sandbox is an iframe attribute; the CSP had no `sandbox` directive until #33 added one | [iframe sandbox][iframe-sandbox], [CSP sandbox][csp-sandbox] |
 
 ## 1. Declarative self-navigation
 
@@ -358,6 +358,13 @@ Layer 3 means the sandbox attribute above plus `buildMessageFrameCsp()`.
    flags to every load of the response. CSP ignores that directive in a
    `Content-Security-Policy-Report-Only` header, so it has to go in the
    enforced one.
+
+   *Update:* [#33][issue-33] added
+   `sandbox allow-popups allow-popups-to-escape-sandbox` to the enforced
+   policy from `buildMessageFrameCsp()`, which closes this gap, and removes
+   an empty `href`, so Layer 1 no longer emits the `<a href="">` example
+   above. The report-only policy leaves the directive out. The rest of this
+   note describes the policy as it was when it was written.
 7. **`img-src 'self'` admits every path on the app's origin, not only the
    image proxy.** A raw `<img>` or CSS image can send GET requests to any app
    route. Per the Layer 2 note, they carry no `SameSite=Lax` cookie.
@@ -438,6 +445,7 @@ same-origin images.
 [csp-block]: https://w3c.github.io/webappsec-csp/#should-block-request
 [csp-base-uri]: https://w3c.github.io/webappsec-csp/#directive-base-uri
 [csp-form-action]: https://w3c.github.io/webappsec-csp/#directive-form-action
+[issue-33]: https://github.com/cogniarg/safe-email-html/issues/33
 [csp-sandbox]: https://w3c.github.io/webappsec-csp/#directive-sandbox
 [csp-self]: https://w3c.github.io/webappsec-csp/#parse-response-csp
 [navigate-to]: https://github.com/w3c/webappsec-csp/pull/564

@@ -20,14 +20,21 @@ interface SanitizerElement {
   textContent: string | null
 }
 
-interface SanitizerContainerElement {
+interface SanitizerNode {
+  nodeType: number
+  nodeName: string
+  childNodes: ArrayLike<SanitizerNode>
+}
+
+interface SanitizerContainerElement extends SanitizerNode {
   getAttribute(name: string): string | null
   setAttribute(name: string, value: string): void
+  appendChild(node: SanitizerNode): unknown
   innerHTML: string
   outerHTML: string
 }
 
-interface SanitizerDocument {
+interface SanitizerDocument extends SanitizerNode {
   body: SanitizerContainerElement
   createElement(tagName: string): SanitizerContainerElement
   querySelectorAll(selector: string): Iterable<SanitizerElement>
@@ -239,6 +246,8 @@ export const ALLOWED_TAGS = [
   "a",
   "abbr",
   "address",
+  "article",
+  "aside",
   "b",
   "bdi",
   "bdo",
@@ -259,25 +268,30 @@ export const ALLOWED_TAGS = [
   "figcaption",
   "figure",
   "font",
+  "footer",
   "h1",
   "h2",
   "h3",
   "h4",
   "h5",
   "h6",
+  "header",
   "hr",
   "i",
   "img",
   "ins",
   "kbd",
   "li",
+  "main",
   "mark",
+  "nav",
   "ol",
   "p",
   "pre",
   "q",
   "s",
   "samp",
+  "section",
   "small",
   "span",
   "strike",
@@ -462,10 +476,12 @@ async function rewriteLinks(
         )
         rewrittenRemoteLinks += 1
       }
-    } else if (href && !isAllowedDirectLink(href)) {
+    } else if (href !== null && !isAllowedDirectLink(href)) {
       // Only the explicitly non-web mail and telephone schemes may navigate
       // directly. Relative references could re-enter this route, while other
       // external schemes such as ftp: would bypass the signed interstitial.
+      // That includes an empty href (DOMPurify trims whitespace-only ones to
+      // empty), which resolves to the body document itself.
       anchor.removeAttribute("href")
     }
 
@@ -492,15 +508,44 @@ function displayedLinkLabel(anchor: SanitizerElement): string {
   return parts.filter((part) => part.trim().length > 0).join(" ")
 }
 
+const ELEMENT_NODE = 1
+const TEXT_NODE = 3
+
+/** The elements a document wraps its content in. */
+const DOCUMENT_WRAPPERS = new Set(["HTML", "HEAD", "BODY"])
+
+/**
+ * Document metadata a browser never renders as content. Skipped while
+ * unwrapping rather than left to DOMPurify: linkedom serializes the text of
+ * <title> raw, so an escaped `&lt;/title&gt;` in it would turn into markup
+ * once moved into the body.
+ */
+const DOCUMENT_METADATA = new Set([
+  "BASE",
+  "LINK",
+  "META",
+  "NOSCRIPT",
+  "SCRIPT",
+  "STYLE",
+  "TEMPLATE",
+  "TITLE",
+])
+
 /**
  * Real inbound email is almost always a complete HTML document. linkedom
  * parses a document nested inside the sanitizer's own <body> as a literal
  * <html> child (a spec parser would relocate the content instead), and
  * DOMPurify with KEEP_CONTENT: false then drops that disallowed element
  * together with the entire mail. Unwrap the document up front: keep the
- * <body> content, and carry the body's own presentational attributes over
- * on a wrapper <div> so background/font declarations survive. The wrapper
- * goes through the same sanitization as everything else afterwards.
+ * content, and carry the body's own presentational attributes over on a
+ * wrapper <div> so background/font declarations survive. The wrapper goes
+ * through the same sanitization as everything else afterwards.
+ *
+ * linkedom does not create omitted <body> tags or move stray content into
+ * the body, so a document without <body>, or with content before or after
+ * it, leaves content outside any <body>. Collect it the way a spec parser
+ * would place it: every node in document order, with the <html>, <head>
+ * and <body> wrappers flattened and head metadata skipped.
  */
 function extractDocumentBody(html: string): string {
   if (!/<(?:html|body)[\s>]/i.test(html)) {
@@ -508,16 +553,43 @@ function extractDocumentBody(html: string): string {
   }
 
   const { document } = parseSanitizerHtml(html)
-  const body = document.body
+  const content: Array<SanitizerNode> = []
+  let body: SanitizerContainerElement | undefined
 
-  // A parse that stranded the content outside <body> would blank the mail;
-  // fall back to the original input and let DOMPurify decide.
-  if (!body || body.innerHTML.trim() === "") {
-    return html
+  // An explicit stack rather than recursion: the input limit bounds
+  // characters, not depth, so nested wrappers must not grow the call stack.
+  // Children go on in reverse, so they come off in document order.
+  const pending: Array<SanitizerNode> = []
+  const pushChildren = (parent: SanitizerNode): void => {
+    const children = parent.childNodes
+
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      pending.push(children[index] as SanitizerNode)
+    }
   }
 
-  const style = body.getAttribute("style")
-  const bgcolor = body.getAttribute("bgcolor")
+  pushChildren(document)
+
+  for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
+    const name = node.nodeName.toUpperCase()
+
+    if (node.nodeType === TEXT_NODE) {
+      content.push(node)
+    } else if (node.nodeType !== ELEMENT_NODE) {
+      // Doctypes and comments render nothing.
+    } else if (DOCUMENT_WRAPPERS.has(name)) {
+      if (name === "BODY") {
+        body ??= node as SanitizerContainerElement
+      }
+
+      pushChildren(node)
+    } else if (!DOCUMENT_METADATA.has(name)) {
+      content.push(node)
+    }
+  }
+
+  const style = body?.getAttribute("style") ?? null
+  const bgcolor = body?.getAttribute("bgcolor") ?? null
   // bgcolor first: it is a presentational hint, so the style attribute's
   // own declarations must win the last-declaration-wins tiebreak.
   const wrapperStyle = [
@@ -525,13 +597,17 @@ function extractDocumentBody(html: string): string {
     ...(style === null ? [] : [style]),
   ].join("; ")
 
-  if (wrapperStyle === "") {
-    return body.innerHTML
+  const wrapper = document.createElement("div")
+
+  for (const node of content) {
+    wrapper.appendChild(node)
   }
 
-  const wrapper = document.createElement("div")
+  if (wrapperStyle === "") {
+    return wrapper.innerHTML
+  }
+
   wrapper.setAttribute("style", wrapperStyle)
-  wrapper.innerHTML = body.innerHTML
 
   return wrapper.outerHTML
 }
@@ -636,6 +712,17 @@ const FORBIDDEN_STYLE_VALUE =
   /url\s*\(|image-set|cross-fade|expression|\/\*|[\\<>]/i
 
 /**
+ * Removed from a value before it is tested against FORBIDDEN_STYLE_VALUE, so
+ * a function name split by a tab, newline, form feed or other control
+ * (`ur<TAB>l(`) is still caught. The browser's tokenizer already rejects
+ * such a split name; this keeps the filter from depending on that. Only
+ * the test sees the stripped value. The space is kept, since removing it
+ * could join ordinary words into a false match.
+ */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching controls is the point
+const STYLE_VALUE_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/g
+
+/**
  * Filters one style attribute down to the allowlisted declarations, or
  * `null` when nothing survives.
  */
@@ -655,7 +742,9 @@ function sanitizeStyleAttribute(css: string): string | null {
     if (
       value === "" ||
       !ALLOWED_STYLE_PROPERTIES.has(property) ||
-      FORBIDDEN_STYLE_VALUE.test(value)
+      FORBIDDEN_STYLE_VALUE.test(
+        value.replace(STYLE_VALUE_CONTROL_CHARACTERS, "")
+      )
     ) {
       continue
     }

@@ -118,6 +118,10 @@ const decision = evaluateRedirectTarget(params.get("to") ?? "")
 ></iframe>
 ```
 
+The frame CSP repeats these flags as a `sandbox` directive, so the body is
+sandboxed even if it is opened outside the iframe. Keep the iframe's flags as
+shown: the browser applies the stricter of the two for each flag.
+
 Always check that the signed-in reader may read the message, in both routes.
 A valid signature only proves your server emitted the URL.
 

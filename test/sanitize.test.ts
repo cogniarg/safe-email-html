@@ -92,6 +92,32 @@ describe("sanitizeInboundHtml", async () => {
     expect(html).toContain('style="color: green"')
   })
 
+  it("strips forbidden CSS functions split by a tab, newline or other control", async () => {
+    const separators = ["\t", "\n", "\r", "\f", "\u0000", "\u000b", "\u007f"]
+    const functions = ["url(", "image-set(", "cross-fade(", "expression("]
+
+    for (const separator of separators) {
+      for (const name of functions) {
+        const split = `${name.slice(0, 2)}${separator}${name.slice(2)}`
+        const { html } = await sanitize(
+          `<p style="color: red; background: ${split}https://evil.example/x.png)">x</p>`
+        )
+
+        expect(html, JSON.stringify(split)).toContain('style="color: red"')
+      }
+    }
+  })
+
+  it("keeps allowlisted declarations that contain tabs or newlines", async () => {
+    const { html } = await sanitize(
+      '<p style="margin:\t0\n10px;\tfont-family:\tArial,\nsans-serif">ok</p>'
+    )
+
+    expect(html).toContain(
+      'style="margin: 0\n10px; font-family: Arial,\nsans-serif"'
+    )
+  })
+
   it("keeps presentational inline styles but drops properties off the allowlist", async () => {
     const { html } = await sanitize(
       '<div style="position:absolute;inset:0;background-color:#fff">' +
@@ -166,6 +192,136 @@ describe("sanitizeInboundHtml", async () => {
     )
     expect(html).not.toContain("<style")
     expect(html).not.toContain("<html")
+  })
+
+  it("keeps the content of HTML5 structural elements", async () => {
+    const { html } = await sanitize(
+      "<section><p>Essential business content</p></section>"
+    )
+
+    expect(html).toBe("<section><p>Essential business content</p></section>")
+
+    for (const tag of [
+      "article",
+      "aside",
+      "footer",
+      "header",
+      "main",
+      "nav",
+      "section",
+    ]) {
+      const { html: nested } = await sanitize(
+        `<${tag} class="block"><p>inside ${tag}</p></${tag}>`
+      )
+
+      expect(nested).toBe(`<${tag} class="block"><p>inside ${tag}</p></${tag}>`)
+    }
+  })
+
+  it("gives structural elements only the global attribute allowlist", async () => {
+    const { html } = await sanitize(
+      '<section onclick="alert(1)" onmouseover="alert(2)" data-x="1" ' +
+        'aria-label="x" role="dialog" hidden tabindex="0" ' +
+        'style="color: red; position: fixed" title="t">' +
+        '<header onload="alert(3)" contenteditable="true">head</header>' +
+        '<nav popover="manual" inert>nav</nav>' +
+        '<main onfocus="alert(4)" autofocus>main</main>' +
+        "</section>"
+    )
+
+    expect(html).toBe(
+      '<section style="color: red" title="t">' +
+        "<header>head</header><nav>nav</nav><main>main</main></section>"
+    )
+  })
+
+  it("drops disallowed elements nested in structural elements with their content", async () => {
+    const { html } = await sanitize(
+      "<article><p>kept</p>" +
+        '<form action="https://evil.example/phish"><p>Enter your password</p>' +
+        '<input name="password"></form>' +
+        "<script>alert(1)</script>" +
+        "<svg><text>svg text</text></svg>" +
+        "<style>p{color:red}</style>" +
+        "</article>"
+    )
+
+    expect(html).toBe("<article><p>kept</p></article>")
+  })
+
+  it("renders a document that omits its body tags", async () => {
+    const { html } = await sanitize(
+      "<!doctype html><html><p>Essential business content</p></html>"
+    )
+
+    expect(html).toBe("<p>Essential business content</p>")
+  })
+
+  it("renders a document with a head and no body tags without leaking the head", async () => {
+    const { html } = await sanitize(
+      "<!DOCTYPE html><html><head>" +
+        "<title>head title</title>" +
+        '<meta charset="utf-8">' +
+        '<link rel="stylesheet" href="https://evil.example/x.css">' +
+        '<base href="https://evil.example/">' +
+        '<style>p::after { content: "style text" }</style>' +
+        '<script>alert("script text")</script>' +
+        "<noscript><p>noscript text</p></noscript>" +
+        "<template><p>template text</p></template>" +
+        "</head><p>Essential business content</p></html>"
+    )
+
+    expect(html).toBe("<p>Essential business content</p>")
+  })
+
+  it("does not let escaped head text turn into markup", async () => {
+    const { html } = await sanitize(
+      "<html><head>" +
+        "<title>&lt;/title&gt;&lt;p&gt;title leak&lt;/p&gt;</title>" +
+        "<style>&lt;/style&gt;&lt;p&gt;style leak&lt;/p&gt;</style>" +
+        "</head><p>Essential business content</p></html>"
+    )
+
+    expect(html).toBe("<p>Essential business content</p>")
+  })
+
+  it("keeps content stranded around the body tags", async () => {
+    const { html } = await sanitize(
+      "<html><head><title>t</title></head>" +
+        "<p>before body</p>" +
+        '<body style="color: #333333"><p>in body</p></body>' +
+        "<p>after body</p></html>" +
+        "<p>after html</p>"
+    )
+
+    expect(html).toBe(
+      '<div style="color: #333333"><p>before body</p><p>in body</p>' +
+        "<p>after body</p><p>after html</p></div>"
+    )
+  })
+
+  it("keeps content a parser left inside the head", async () => {
+    const { html } = await sanitize(
+      "<html><head><title>t</title><p>Essential business content</p></head></html>"
+    )
+
+    expect(html).toBe("<p>Essential business content</p>")
+  })
+
+  it("renders nothing for a document with only a head", async () => {
+    const { html } = await sanitize(
+      "<html><head><title>only a title</title><style>p{}</style></head></html>"
+    )
+
+    expect(html).toBe("")
+  })
+
+  it("unwraps document wrappers nested deeper than the call stack", async () => {
+    const { html } = await sanitize(
+      `${"<html><body>".repeat(20_000)}<p>Essential business content</p>`
+    )
+
+    expect(html).toBe("<p>Essential business content</p>")
   })
 
   it("blanks schemeless, empty, and data: image sources", async () => {
@@ -404,6 +560,26 @@ describe("sanitizeInboundHtml", async () => {
     expect(html).not.toContain("href=")
     expect(html).toContain("see the pictures")
     expect(html).toContain("and this")
+  })
+
+  it("strips empty and whitespace-only hrefs, which resolve to the body route", async () => {
+    const { html } = await sanitize(
+      '<a href="">empty</a>' +
+        '<a href="   ">spaces</a>' +
+        '<a href="\t\n">controls</a>' +
+        '<a href="https://example.com/ok">remote</a>' +
+        '<a href="mailto:jane@acme.example">mail</a>' +
+        '<a href="tel:+15551234567">call</a>'
+    )
+
+    expect(html.match(/href=/g)).toHaveLength(3)
+    expect(html).toContain("/api/redirect?to=")
+    expect(html).toContain('href="mailto:jane@acme.example"')
+    expect(html).toContain('href="tel:+15551234567"')
+    expect(html).not.toContain('href=""')
+    expect(html).toContain(">empty</a>")
+    expect(html).toContain(">spaces</a>")
+    expect(html).toContain(">controls</a>")
   })
 
   it("leaves mailto links unrewritten but still hardened", async () => {

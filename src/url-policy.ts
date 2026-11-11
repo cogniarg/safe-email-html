@@ -264,8 +264,31 @@ export function isExecutableAttachment({
  * see what an image renders. Excluding them here fail-closes every current
  * and future "paint a fake label with CSS/images" vector at the platform
  * layer.
+ *
+ * The `sandbox` directive carries the same keywords the iframe's `sandbox`
+ * attribute must have, so the body is sandboxed even when it is loaded
+ * outside the frame, for example opened as a top-level page. Inside the
+ * frame, the document's flags are the union of both, so identical keywords
+ * change nothing. See docs/adr/0002-fixed-sandbox-flags-in-the-frame-csp.md.
  */
 export function buildMessageFrameCsp(): string {
+  return [...messageFrameDirectives(), MESSAGE_FRAME_SANDBOX].join("; ")
+}
+
+/**
+ * The enforced policy without `sandbox`, which CSP ignores in a
+ * Content-Security-Policy-Report-Only header, plus `report-uri`.
+ */
+export function buildMessageFrameCspReportOnly(
+  reportUri: string = DEFAULT_CSP_REPORT_PATH
+): string {
+  return [...messageFrameDirectives(), `report-uri ${reportUri}`].join("; ")
+}
+
+const MESSAGE_FRAME_SANDBOX =
+  "sandbox allow-popups allow-popups-to-escape-sandbox"
+
+function messageFrameDirectives(): Array<string> {
   return [
     "default-src 'none'",
     "img-src 'self'",
@@ -275,11 +298,5 @@ export function buildMessageFrameCsp(): string {
     "form-action 'none'",
     "base-uri 'none'",
     "frame-ancestors 'self'",
-  ].join("; ")
-}
-
-export function buildMessageFrameCspReportOnly(
-  reportUri: string = DEFAULT_CSP_REPORT_PATH
-): string {
-  return `${buildMessageFrameCsp()}; report-uri ${reportUri}`
+  ]
 }

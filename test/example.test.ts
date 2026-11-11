@@ -33,6 +33,9 @@ describe("examples/fetch-handler", () => {
     expect(response.headers.get("content-security-policy")).toContain(
       "script-src 'none'"
     )
+    expect(response.headers.get("content-security-policy")).toContain(
+      "sandbox allow-popups allow-popups-to-escape-sandbox"
+    )
     expect(html).not.toContain("onclick")
     expect(html).toContain("/api/redirect?to=")
   })

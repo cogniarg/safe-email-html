@@ -193,6 +193,29 @@ describe("message frame CSP", () => {
     expect(csp).toContain("base-uri 'none'")
   })
 
+  it("sandboxes every load of the body with the iframe's own flags", () => {
+    // Without the directive, opening the body route as a top-level page
+    // runs it on the app's origin with no sandbox. The keywords match the
+    // documented iframe attribute, and an embedded frame gets the union of
+    // both flag sets, so a correctly embedded frame is unchanged.
+    expect(buildMessageFrameCsp().split("; ")).toContain(
+      "sandbox allow-popups allow-popups-to-escape-sandbox"
+    )
+  })
+
+  it("leaves sandbox out of the report-only variant, which ignores it", () => {
+    // CSP3 ignores `sandbox` in a Report-Only header. Every other directive
+    // stays identical to the enforced policy.
+    const enforced = buildMessageFrameCsp().split("; ")
+    const reportOnly = buildMessageFrameCspReportOnly("/csp").split("; ")
+
+    expect(reportOnly.some((d) => d.startsWith("sandbox"))).toBe(false)
+    expect(reportOnly).toEqual([
+      ...enforced.filter((d) => !d.startsWith("sandbox")),
+      "report-uri /csp",
+    ])
+  })
+
   it("adds the report endpoint to the report-only variant", () => {
     expect(buildMessageFrameCspReportOnly()).toContain(
       "report-uri /api/csp-report"
