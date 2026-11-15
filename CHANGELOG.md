@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- **Images attached to the message can now render.** An `<img>` whose `src`
+  is `cid:<Content-ID>` names an image sent inside the message. Every one
+  was blanked, because only your app can map a Content-ID to a stored
+  attachment. `sanitizeInboundHtml` now takes `buildInlineImageUrl`, which
+  receives the Content-ID (percent-decoded, without angle brackets) and
+  returns the URL of your route that serves it, or `null`. Without the hook
+  these images stay blank, as before.
+- Attached images load whether or not remote images are allowed, and they
+  don't set `hasRemoteImages`: serving them makes no request to the sender.
+- At most `MAX_INLINE_IMAGES` (50) distinct Content-IDs are resolved per
+  render. Repeats reuse their URL and the rest stay blank.
+- `TargetPurpose` gains `"inline-image"`, so a signature for an attached
+  image can't be replayed against the image proxy or the redirect.
+
 ## 0.2.2
 
 - **Mail inside HTML5 structural elements now renders.** `<section>`,

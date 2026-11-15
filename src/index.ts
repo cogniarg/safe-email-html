@@ -13,6 +13,7 @@ export type {
   SanitizeInboundHtmlInput,
 } from "./sanitize.js"
 export {
+  MAX_INLINE_IMAGES,
   MAX_PROXIED_REMOTE_IMAGES,
   MAX_REWRITTEN_REMOTE_LINKS,
   MAX_SANITIZED_HTML_CHARS,

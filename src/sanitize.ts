@@ -201,6 +201,13 @@ export const MAX_REWRITTEN_REMOTE_LINKS = 512
  */
 export const MAX_PROXIED_REMOTE_IMAGES = 20
 
+/**
+ * Upper bound on distinct `cid:` images one render resolves; each costs a
+ * `buildInlineImageUrl` call, usually a signature. Repeats of a Content-ID
+ * reuse its URL, and images past the limit stay blank.
+ */
+export const MAX_INLINE_IMAGES = 50
+
 /** Whether remote images render via the proxy or stay disabled. */
 export type RemoteImageMode = "blocked" | "proxied"
 
@@ -219,6 +226,24 @@ export interface SanitizeInboundHtmlInput {
    * inspect output without serving it.
    */
   buildRemoteImageUrl?: (url: string) => Promise<string> | string
+  /**
+   * Builds the src of an image attached to the message itself and referenced
+   * as `cid:<Content-ID>`. It receives the Content-ID percent-decoded and
+   * without angle brackets, and returns the URL of your route that serves
+   * that attachment, or `null` when it has none. Only your app can map a
+   * Content-ID to a stored attachment, so without this every `cid:` image
+   * stays blank.
+   *
+   * These images load in both `remoteImages` modes: the bytes arrived with
+   * the message, so serving them tells the sender nothing. The Content-ID is
+   * still sender-controlled. Sign the URL (purpose `"inline-image"`) with the
+   * reader and an expiry in `context`, as for `buildRemoteImageUrl`, and
+   * return a same-origin URL: the frame CSP's `img-src 'self'` blocks any
+   * other.
+   */
+  buildInlineImageUrl?: (
+    contentId: string
+  ) => Promise<string | null> | string | null
   /**
    * Builds the href used for a rewritten remote link. Pass a signer here
    * (see `createTargetSigner`) so redirect URLs are bound to this message,
@@ -345,6 +370,7 @@ export async function sanitizeInboundHtml({
   messageId,
   remoteImages = "blocked",
   buildRemoteImageUrl = (url) => buildImgProxyUrl({ url, messageId }),
+  buildInlineImageUrl = () => null,
   buildRedirectLinkUrl = ({ url, displayedText }) =>
     buildRedirectUrl({ to: url, messageId, displayedText }),
 }: SanitizeInboundHtmlInput): Promise<SanitizedInboundHtml> {
@@ -392,7 +418,8 @@ export async function sanitizeInboundHtml({
   const hasRemoteImages = await rewriteImages(
     document,
     remoteImages,
-    buildRemoteImageUrl
+    buildRemoteImageUrl,
+    buildInlineImageUrl
   )
   await rewriteLinks(document, buildRedirectLinkUrl)
   filterInlineStyles(document)
@@ -406,22 +433,38 @@ export async function sanitizeInboundHtml({
 async function rewriteImages(
   document: SanitizerDocument,
   remoteImages: RemoteImageMode,
-  buildRemoteImageUrl: (url: string) => Promise<string> | string
+  buildRemoteImageUrl: (url: string) => Promise<string> | string,
+  buildInlineImageUrl: (
+    contentId: string
+  ) => Promise<string | null> | string | null
 ): Promise<boolean> {
   let hasRemoteImages = false
   const proxiedUrls = new Map<string, string>()
+  const inlineUrls = new Map<string, string | null>()
 
   for (const image of document.querySelectorAll("img")) {
     const source = image.getAttribute("src")
 
     if (!source || !isRemoteUrl(source)) {
-      // Every non-remote src is blanked. Schemeless srcs (including the
-      // empty string) resolve against the body route itself, so a message
-      // could fan out authenticated same-origin requests on every open.
-      // The frame CSP's img-src excludes data:, so data: URIs could not
-      // load anyway.
+      const contentId = source ? inlineImageContentId(source) : null
+      let inlineUrl = contentId === null ? null : inlineUrls.get(contentId)
+
+      if (
+        contentId !== null &&
+        inlineUrl === undefined &&
+        inlineUrls.size < MAX_INLINE_IMAGES
+      ) {
+        inlineUrl = await buildInlineImageUrl(contentId)
+        inlineUrls.set(contentId, inlineUrl)
+      }
+
+      // Every other non-remote src is blanked. Schemeless srcs (including
+      // the empty string) resolve against the body route itself, so a
+      // message could fan out authenticated same-origin requests on every
+      // open. The frame CSP's img-src excludes data:, so data: URIs could
+      // not load anyway.
       if (source !== null) {
-        image.setAttribute("src", "about:blank")
+        image.setAttribute("src", inlineUrl ?? "about:blank")
       }
 
       continue
@@ -446,6 +489,29 @@ async function rewriteImages(
   }
 
   return hasRemoteImages
+}
+
+/**
+ * The Content-ID a `cid:` URL names (RFC 2392), or null for any other src.
+ * The URL form percent-encodes the Content-ID and drops its angle brackets;
+ * a sender that kept the brackets still names the same attachment.
+ */
+function inlineImageContentId(source: string): string | null {
+  const match = /^cid:(.+)$/is.exec(stripUrlControlCharacters(source))
+
+  if (!match?.[1]) {
+    return null
+  }
+
+  let contentId = match[1]
+
+  try {
+    contentId = decodeURIComponent(contentId)
+  } catch {
+    // A stray "%" is not an escape: keep the Content-ID as written.
+  }
+
+  return contentId.replace(/^<(.+)>$/s, "$1")
 }
 
 async function rewriteLinks(
