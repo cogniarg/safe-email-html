@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  MAX_INLINE_IMAGES,
   MAX_PROXIED_REMOTE_IMAGES,
   MAX_REWRITTEN_REMOTE_LINKS,
   MAX_SANITIZED_HTML_CHARS,
@@ -435,6 +436,75 @@ describe("sanitizeInboundHtml", async () => {
     expect(html).toContain('src="about:blank"')
     expect(html).not.toContain("data:image")
     expect(html).not.toContain("data-original-src")
+  })
+
+  it("blanks cid: images when the caller resolves none", async () => {
+    const { html, hasRemoteImages } = await sanitize(
+      '<img src="cid:logo@mail.example" alt="logo">'
+    )
+
+    expect(hasRemoteImages).toBe(false)
+    expect(html).toBe('<img src="about:blank" alt="logo">')
+  })
+
+  it("resolves cid: images through the caller while remote images stay blocked", async () => {
+    const resolved: string[] = []
+    const { html, hasRemoteImages } = await sanitizeInboundHtml({
+      html:
+        '<img src="cid:logo@mail.example">' +
+        '<img src="CID:logo@mail.example">' +
+        '<img src=" cid:%3Cphoto%201%40mail.example%3E">' +
+        '<img src="cid:100%">' +
+        '<img src="cid:missing@mail.example">' +
+        '<img src="cid:">' +
+        '<img src="https://tracker.example/pixel.gif">',
+      messageId: MESSAGE_ID,
+      buildInlineImageUrl: (contentId) => {
+        resolved.push(contentId)
+        return contentId.startsWith("missing")
+          ? null
+          : `/inline/${resolved.length}`
+      },
+    })
+
+    // Each Content-ID is resolved once, percent-decoded and without brackets.
+    expect(resolved).toEqual([
+      "logo@mail.example",
+      "photo 1@mail.example",
+      "100%",
+      "missing@mail.example",
+    ])
+    expect(html.match(/src="\/inline\/1"/g)).toHaveLength(2)
+    expect(html).toContain('src="/inline/2"')
+    expect(html).toContain('src="/inline/3"')
+    expect(html.match(/<img src="about:blank">/g)).toHaveLength(2)
+    // Attached images are not remote: no opt-in banner, no proxy.
+    expect(hasRemoteImages).toBe(true)
+    expect(html).toContain(
+      'data-original-src="https://tracker.example/pixel.gif" src="about:blank"'
+    )
+    expect(html).not.toContain("cid:")
+  })
+
+  it("resolves each distinct cid: image once, up to the per-message bound", async () => {
+    const resolved: string[] = []
+    const images = Array.from(
+      { length: MAX_INLINE_IMAGES + 1 },
+      (_, index) => `<img src="cid:${index}">`
+    ).join("")
+    const { html } = await sanitizeInboundHtml({
+      html: `${images}<img src="cid:0">`,
+      messageId: MESSAGE_ID,
+      buildInlineImageUrl: (contentId) => {
+        resolved.push(contentId)
+        return `/inline/${contentId}`
+      },
+    })
+
+    expect(resolved).toHaveLength(MAX_INLINE_IMAGES)
+    expect(html.match(/src="\/inline\/0"/g)).toHaveLength(2)
+    expect(html).not.toContain(`/inline/${MAX_INLINE_IMAGES}`)
+    expect(html.match(/src="about:blank"/g)).toHaveLength(1)
   })
 
   it("routes http(s) links through the redirect interstitial", async () => {

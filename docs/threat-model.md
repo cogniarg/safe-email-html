@@ -59,6 +59,14 @@ them anyway. When the reader opts in, remote images go through your image
 proxy instead, including images inside links: every link is confirmed, so an
 image's pixels can't decide where a click goes.
 
+**Attached images load only through your route.** A `cid:` source names an
+image sent inside the message. It is blanked unless you pass
+`buildInlineImageUrl`, which maps the Content-ID to a URL you serve. These
+load while remote images are blocked: the bytes arrived with the message, so
+serving them tells the sender nothing about the reader. The Content-ID is
+sender-controlled text, so the library passes it to your hook and never
+writes it into the body.
+
 **Every remote link goes through the confirmation page.** That includes
 scheme-relative `//host` and slashless `http:host` forms, which browsers
 treat as absolute. URLs are normalized the way a WHATWG URL parser would see
@@ -74,7 +82,8 @@ render, and the rest stay visible but inert, so one message can't turn a
 render into unbounded crypto work. When images are on, at most
 `MAX_PROXIED_REMOTE_IMAGES` (20) distinct images are signed; repeats reuse
 their URL and the rest stay blank, which also bounds the upstream fetches one
-open can make your proxy do.
+open can make your proxy do. At most `MAX_INLINE_IMAGES` (50) distinct
+attached images are resolved, in either mode.
 
 ## Layer 2: mediate
 
@@ -191,6 +200,11 @@ The library is pure functions, and it can't enforce what happens around them:
     hop and the body read, and cancel every upstream body you discard.
   - Respond with `X-Content-Type-Options: nosniff` and
     `Content-Security-Policy: default-src 'none'`.
+- **Harden the attached-image route** (the one `buildInlineImageUrl` points
+  at): authorize from the signed grant like the proxy, find the attachment by
+  Content-ID within the signed message only, and serve it under the same
+  format and header rules as the proxy. A sender can label any file with a
+  Content-ID, so the stored `Content-Type` proves nothing.
 - **Serve attachments** with `Content-Disposition: attachment` and
   `nosniff`, and use `isExecutableAttachment` to require confirmation for
   executables (it checks both the MIME type and the extension, since senders

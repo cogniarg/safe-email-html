@@ -12,7 +12,7 @@
  * Workers.
  */
 
-export type TargetPurpose = "img-proxy" | "redirect"
+export type TargetPurpose = "img-proxy" | "inline-image" | "redirect"
 
 export interface TargetSignatureInput {
   /**

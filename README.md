@@ -28,7 +28,8 @@ which point somewhere else. This library handles all three, in layers:
   filtered down to presentational properties, so sender CSS can't load
   anything from a URL.
 - **Blocks remote images** by default (no tracking pixels on open), with an
-  opt-in mode that routes them through your image proxy.
+  opt-in mode that routes them through your image proxy. Images attached to
+  the message (`cid:`) load from a route of yours that you sign.
 - **Confirms every link on your server.** Each link points to a signed
   confirmation page headed by the real destination host. The signature binds
   the link to the message, the exact destination and the link text, so none
@@ -141,6 +142,38 @@ addresses, serve only PNG, JPEG, GIF and WebP identified by their bytes, and
 put a deadline on the fetch. [The threat model](docs/threat-model.md) has the
 full list. The default path is `/api/img-proxy`, and
 `buildImgProxyUrl({ url, messageId, path })` builds it.
+
+### Images attached to the message
+
+A message can carry its own images and reference them as
+`<img src="cid:<Content-ID>">`. Only your app knows which stored attachment a
+Content-ID names, so they stay blank until you pass `buildInlineImageUrl`:
+
+```ts
+buildInlineImageUrl: async (contentId) => {
+  const params = new URLSearchParams({ messageId, cid: contentId, readerId, exp })
+  const signature = await sign({
+    purpose: "inline-image",
+    messageId,
+    target: contentId,
+    context: `${exp}:${readerId}`,
+  })
+
+  return `/api/inline-image?${params}&sig=${signature}`
+}
+```
+
+The hook receives the Content-ID percent-decoded and without angle brackets,
+and returns a URL, or `null` to leave the image blank. At most 50 distinct
+Content-IDs are resolved per render. These images load even while remote
+images are blocked, because serving them makes no request to the sender.
+
+Your route is authorized like the image proxy: verify the signature and the
+expiry, then check that this reader may read the message. The Content-ID and
+the bytes are still the sender's, so look the attachment up within that one
+message, serve only PNG, JPEG, GIF and WebP identified by their bytes, and
+send `X-Content-Type-Options: nosniff`. The URL must be same-origin with the
+body route, or the frame CSP's `img-src 'self'` blocks it.
 
 ### Attachments
 
