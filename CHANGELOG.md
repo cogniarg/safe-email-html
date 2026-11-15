@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.3
 
 - **Images attached to the message can now render.** An `<img>` whose `src`
   is `cid:<Content-ID>` names an image sent inside the message. Every one
