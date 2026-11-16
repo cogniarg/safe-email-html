@@ -52,11 +52,11 @@
     "linkedom": "^0.18.12"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.6.4",
+    "@biomejs/biome": "2.6.6",
     "@types/node": "26.6.6",
-    "parse5": "8.1.0",
+    "parse5": "8.1.1",
     "typescript": "7.0.2",
     "vitest": "5.1.0",
-    "wrangler": "4.156.2"
+    "wrangler": "4.159.0"
   }
 }
